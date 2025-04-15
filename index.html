@@ -9,42 +9,52 @@
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
   
   <!-- React + React DOM -->
-  <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
   
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   
   <!-- Feather Icons -->
-  <script src="https://unpkg.com/feather-icons"></script>
-  
-  <style>
-    /* シンプルなアイコン代替スタイル */
-    .icon {
-      display: inline-block;
-      width: 1em;
-      height: 1em;
-      margin-right: 0.25em;
-    }
-  </style>
+  <script src="https://unpkg.com/feather-icons/dist/feather.min.js"></script>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
   <script type="text/babel">
-    // シンプルなアイコンコンポーネント
+    // アイコンコンポーネント - 修正済み
     const Icon = ({ name, className = "" }) => {
-      // feather依存のコードを削除し、シンプルなテキストを返す
-      return <span className={`icon ${className}`}>{name}</span>;
-          feather.replace();
-    };
+      React.useEffect(() => {
+        if (window.feather) {
+          window.feather.replace();
+        }
+      }, [name]);
       
-      return <i data-feather={name} className={`icon ${className}`}></i>;
+      return <i data-feather={name} className={`${className}`}></i>;
     };
     
     // Main component
     const KeepaTracker = () => {
-      const [apiKey, setApiKey] = React.useState('');
+      // アマゾンドメインの選択肢
+      const amazonDomains = [
+        { id: 1, name: "com", label: "アメリカ (com)" },
+        { id: 2, name: "co.uk", label: "イギリス (co.uk)" },
+        { id: 3, name: "de", label: "ドイツ (de)" },
+        { id: 4, name: "fr", label: "フランス (fr)" },
+        { id: 5, name: "co.jp", label: "日本 (co.jp)" },
+        { id: 6, name: "ca", label: "カナダ (ca)" },
+        { id: 8, name: "it", label: "イタリア (it)" },
+        { id: 9, name: "es", label: "スペイン (es)" },
+        { id: 10, name: "in", label: "インド (in)" },
+        { id: 11, name: "com.mx", label: "メキシコ (com.mx)" },
+        { id: 12, name: "com.br", label: "ブラジル (com.br)" }
+      ];
+      
+      // 状態の初期化
+      const [apiKey, setApiKey] = React.useState(() => {
+        // ローカルストレージから読み込み
+        return localStorage.getItem('keepaApiKey') || '';
+      });
       const [pastedData, setPastedData] = React.useState('');
       const [trackingOptions, setTrackingOptions] = React.useState({
         buyBox: true,
@@ -64,6 +74,21 @@
       const [currentBatch, setCurrentBatch] = React.useState(0);
       const [showSettings, setShowSettings] = React.useState(false);
       const [notification, setNotification] = React.useState(null);
+      const [selectedDomain, setSelectedDomain] = React.useState(5); // デフォルトは日本
+      const [saveApiKey, setSaveApiKey] = React.useState(true);
+      const [ttl, setTtl] = React.useState(4320); // デフォルトは6ヶ月
+      const [updateInterval, setUpdateInterval] = React.useState(1); // デフォルトは1時間
+      const [directApiAccess, setDirectApiAccess] = React.useState(false);
+      const [proxyUrl, setProxyUrl] = React.useState('');
+
+      // APIキーが変更された時にローカルストレージに保存
+      React.useEffect(() => {
+        if (saveApiKey && apiKey) {
+          localStorage.setItem('keepaApiKey', apiKey);
+        } else if (!saveApiKey) {
+          localStorage.removeItem('keepaApiKey');
+        }
+      }, [apiKey, saveApiKey]);
 
       // 通知を表示するための効果
       React.useEffect(() => {
@@ -75,17 +100,21 @@
         }
       }, [notification]);
 
-      // Parse pasted spreadsheet data - シンプル2列バージョン
+      // Parse pasted spreadsheet data - 改良版
       const parseData = (data) => {
         // 空白行の除去と正規化
         const cleanedData = data.trim().replace(/\r\n/g, '\n');
         const lines = cleanedData.split('\n');
         
+        if (lines.length === 0) {
+          throw new Error('データが見つかりません。有効なデータを貼り付けてください。');
+        }
+        
         // 各行を解析
         let skippedCount = 0;
         const validRows = [];
         
-        // ヘッダー行があるかチェック（最初の行がASINパターンを含まない場合はヘッダーと見なす）
+        // ヘッダー行があるかチェック
         const firstLine = lines[0].trim();
         const hasHeader = !/B0[0-9A-Z]{8}/i.test(firstLine);
         const startIndex = hasHeader ? 1 : 0;
@@ -110,10 +139,30 @@
           const asin = asinMatch[0].toUpperCase();
           
           // ASINを除去して価格を探す
-          const priceText = line.replace(asin, '').trim();
-          const priceNumber = parseInt(priceText.replace(/[^\d]/g, '')) || 0;
+          // 様々な価格形式に対応
+          let priceText = line.replace(asin, '').trim();
+          // カンマやピリオドを含む価格パターンを検出
+          let priceMatch = priceText.match(/[\d,]+(\.\d+)?/);
+          if (!priceMatch) {
+            console.log('有効な価格が見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
           
-          if (priceNumber <= 0) {
+          // 価格をきれいにする
+          let cleanPrice = priceMatch[0].replace(/,/g, '');
+          let priceNumber = parseFloat(cleanPrice);
+          
+          // 小数点以下がある場合は最小通貨単位（例: 円、セント）に変換
+          if (cleanPrice.includes('.')) {
+            // 小数点があれば通貨単位に変換（例: $10.99 → 1099 セント）
+            priceNumber = Math.round(priceNumber * 100);
+          } else {
+            // 小数点がなければ整数として解析
+            priceNumber = parseInt(cleanPrice, 10);
+          }
+          
+          if (isNaN(priceNumber) || priceNumber <= 0) {
             console.log('有効な価格が見つかりません:', line);
             skippedCount++;
             continue;
@@ -138,7 +187,7 @@
         return validRows;
       };
 
-// Generate tracking creation objects
+      // Generate tracking creation objects - 改良版
       const generateTrackingObjects = (parsedData) => {
         return parsedData.map(item => {
           // Create threshold values based on selected tracking options
@@ -147,7 +196,7 @@
           if (trackingOptions.amazon) {
             thresholdValues.push({
               thresholdValue: item.price,
-              domain: 5, // Japan (co.jp)
+              domain: parseInt(selectedDomain),
               csvType: 0, // AMAZON
               isDrop: true
             });
@@ -156,7 +205,7 @@
           if (trackingOptions.new) {
             thresholdValues.push({
               thresholdValue: item.price,
-              domain: 5, // Japan (co.jp)
+              domain: parseInt(selectedDomain),
               csvType: 1, // NEW
               isDrop: true
             });
@@ -165,7 +214,7 @@
           if (trackingOptions.used) {
             thresholdValues.push({
               thresholdValue: item.price,
-              domain: 5, // Japan (co.jp)
+              domain: parseInt(selectedDomain),
               csvType: 2, // USED
               isDrop: true
             });
@@ -174,7 +223,7 @@
           if (trackingOptions.buyBox) {
             thresholdValues.push({
               thresholdValue: item.price,
-              domain: 5, // Japan (co.jp)
+              domain: parseInt(selectedDomain),
               csvType: 18, // BUY_BOX_SHIPPING
               isDrop: true
             });
@@ -182,27 +231,37 @@
           
           return {
             asin: item.asin,
-            ttl: 4320, // 6 months in hours (6*30*24)
+            ttl: parseInt(ttl), // ユーザー設定可能な時間
             expireNotify: true,
             desiredPricesInMainCurrency: true,
-            mainDomainId: 5, // Japan (co.jp)
-            updateInterval: 1, // 1 hour
+            mainDomainId: parseInt(selectedDomain), // ユーザー設定可能なドメイン
+            updateInterval: parseInt(updateInterval), // ユーザー設定可能な更新間隔
             thresholdValues,
             notificationType: [false, false, false, false, false, true, false] // API notifications only
           };
         });
       };
 
-      // Submit tracking to Keepa API
+      // Submit tracking to Keepa API - 改良版
       const submitTracking = async (trackingObjects) => {
         if (!apiKey) {
           throw new Error('Keepa APIキーを入力してください。');
         }
         
-        // ここがCORS対策のために変更された部分
-        const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://api.keepa.com/tracking?key=${apiKey}&type=add`)}`;
+        // APIエンドポイントを決定
+        let apiEndpoint;
+        if (directApiAccess) {
+          // 直接APIアクセス
+          apiEndpoint = `https://api.keepa.com/tracking`;
+        } else if (proxyUrl) {
+          // カスタムプロキシを使用
+          apiEndpoint = proxyUrl;
+        } else {
+          // CORS対策のためのフォールバック
+          throw new Error('CORS制限のため、直接APIアクセスかカスタムプロキシURLを設定してください。');
+        }
         
-        // Process in smaller batches based on user-defined batch size
+        // Process in smaller batches
         const results = [];
         
         // Calculate total batches for progress tracking
@@ -219,17 +278,25 @@
           try {
             // Show detailed request data for debugging
             console.log(`バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} 処理中...`);
-            console.log('リクエスト先URL:', url);
+            console.log('リクエスト先URL:', apiEndpoint);
             console.log('リクエストデータ:', JSON.stringify(batch, null, 2));
             
-            // Make the actual API call to Keepa
-            const response = await fetch(url, {
+            // Make the API call to Keepa
+            const response = await fetch(apiEndpoint, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
               },
-              body: JSON.stringify(batch),
+              body: JSON.stringify({
+                key: apiKey,
+                type: 'add',
+                tracking: batch
+              }),
             });
+            
+            if (!response.ok) {
+              throw new Error(`HTTP エラー: ${response.status} ${response.statusText}`);
+            }
             
             const responseText = await response.text();
             let data;
@@ -412,7 +479,15 @@
         }
       };
 
-return (
+      // サンプルデータを挿入
+      const insertSampleData = () => {
+        const sampleData = `B09GFPTN45 3,980
+B07NWSLSXM 11,067
+B08D11DZ37 2,500`;
+        setPastedData(sampleData);
+      };
+
+      return (
         <div className="max-w-6xl mx-auto p-4">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-gray-800 mb-2">L-Track</h1>
@@ -426,15 +501,15 @@ return (
               'bg-blue-100 text-blue-800'
             }`}>
               <div className="flex items-start">
-                {notification.type === 'success' && <Icon name="check" className="text-green-500" />}
-                {notification.type === 'error' && <Icon name="alert-circle" className="text-red-500" />}
-                {notification.type === 'info' && <Icon name="info" className="text-blue-500" />}
-                <div>
+                {notification.type === 'success' && <Icon name="check-circle" className="text-green-500 mr-2 flex-shrink-0" />}
+                {notification.type === 'error' && <Icon name="alert-circle" className="text-red-500 mr-2 flex-shrink-0" />}
+                {notification.type === 'info' && <Icon name="info" className="text-blue-500 mr-2 flex-shrink-0" />}
+                <div className="flex-grow">
                   <p className="font-medium">{notification.message}</p>
                 </div>
                 <button 
                   onClick={() => setNotification(null)}
-                  className="ml-auto -mr-1 -mt-1 p-1 text-gray-500 hover:text-gray-700 focus:outline-none"
+                  className="ml-auto -mr-1 -mt-1 p-1 text-gray-500 hover:text-gray-700 focus:outline-none flex-shrink-0"
                 >
                   <Icon name="x" />
                 </button>
@@ -444,10 +519,10 @@ return (
           
           <div className="bg-blue-50 p-4 rounded-lg mb-8">
             <div className="flex gap-2">
-              <Icon name="info" className="text-blue-500" />
+              <Icon name="info" className="text-blue-500 flex-shrink-0 mt-1" />
               <div>
                 <h3 className="text-blue-700 font-medium">使い方</h3>
-                <ol className="list-decimal ml-5 text-blue-700 text-sm">
+                <ol className="list-decimal ml-5 text-blue-700 text-sm mt-2">
                   <li>スプレッドシートからASINと基準価格の2列をコピー</li>
                   <li>下のテキストエリアにペースト</li>
                   <li>KeepaのAPIキーを入力</li>
@@ -459,19 +534,53 @@ return (
           </div>
           
           <form onSubmit={handleSubmit}>
-            <div className="mb-6">
-              <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700 mb-1">
-                Keepa APIキー
-              </label>
-              <input
-                type="text"
-                id="apiKey"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="APIキーを入力してください"
-                required
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div>
+                <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700 mb-1">
+                  Keepa APIキー
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    id="apiKey"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="APIキーを入力してください"
+                    required
+                  />
+                </div>
+                <div className="mt-2 flex items-center">
+                  <input
+                    type="checkbox"
+                    id="saveApiKey"
+                    checked={saveApiKey}
+                    onChange={(e) => setSaveApiKey(e.target.checked)}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 mr-2"
+                  />
+                  <label htmlFor="saveApiKey" className="text-sm text-gray-600">
+                    APIキーをブラウザに保存する
+                  </label>
+                </div>
+              </div>
+              
+              <div>
+                <label htmlFor="amazonDomain" className="block text-sm font-medium text-gray-700 mb-1">
+                  Amazonの地域
+                </label>
+                <select
+                  id="amazonDomain"
+                  value={selectedDomain}
+                  onChange={(e) => setSelectedDomain(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {amazonDomains.map(domain => (
+                    <option key={domain.id} value={domain.id}>
+                      {domain.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             
             <div className="mb-6">
@@ -479,47 +588,127 @@ return (
                 <label htmlFor="pastedData" className="block text-sm font-medium text-gray-700">
                   スプレッドシートデータ
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
-                >
-                  <Icon name="settings" className="mr-1" />
-                  <span>詳細設定</span>
-                </button>
+                <div className="flex space-x-2">
+                  <button
+                    type="button"
+                    onClick={insertSampleData}
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                  >
+                    <Icon name="copy" className="mr-1" />
+                    <span>サンプルデータ挿入</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSettings(!showSettings)}
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                  >
+                    <Icon name="settings" className="mr-1" />
+                    <span>詳細設定</span>
+                  </button>
+                </div>
               </div>
               
               {showSettings && (
                 <div className="mb-4 p-4 bg-gray-50 rounded-md">
-                  <div className="mb-2">
-                    <label htmlFor="batchSize" className="block text-sm font-medium text-gray-700 mb-1">
-                      バッチサイズ（一度に処理する商品数）
-                    </label>
-                    <div className="flex items-center">
-                      <input
-                        type="range"
-                        id="batchSize"
-                        min="1"
-                        max="50"
-                        value={batchSize}
-                        onChange={(e) => setBatchSize(parseInt(e.target.value))}
-                        className="w-full mr-3"
-                      />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label htmlFor="batchSize" className="block text-sm font-medium text-gray-700 mb-1">
+                        バッチサイズ（一度に処理する商品数）
+                      </label>
                       <div className="flex items-center">
                         <input
-                          type="number"
-                          value={batchSize}
-                          onChange={(e) => setBatchSize(parseInt(e.target.value) || 1)}
+                          type="range"
+                          id="batchSize"
                           min="1"
                           max="50"
-                          className="w-16 px-2 py-1 border border-gray-300 rounded-md text-center"
+                          value={batchSize}
+                          onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                          className="w-full mr-3"
                         />
-                        <span className="ml-2 text-gray-600 text-sm">件</span>
+                        <div className="flex items-center">
+                          <input
+                            type="number"
+                            value={batchSize}
+                            onChange={(e) => setBatchSize(parseInt(e.target.value) || 1)}
+                            min="1"
+                            max="50"
+                            className="w-16 px-2 py-1 border border-gray-300 rounded-md text-center"
+                          />
+                          <span className="ml-2 text-gray-600 text-sm">件</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        APIの制限に問題がある場合は、小さい値に設定してください。推奨: 1〜10
+                      </p>
+                    </div>
+                    
+                    <div>
+                      <label htmlFor="ttl" className="block text-sm font-medium text-gray-700 mb-1">
+                        トラッキング期間
+                      </label>
+                      <div className="flex items-center">
+                        <select
+                          id="ttl"
+                          value={ttl}
+                          onChange={(e) => setTtl(parseInt(e.target.value))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="720">1ヶ月（30日）</option>
+                          <option value="2160">3ヶ月（90日）</option>
+                          <option value="4320">6ヶ月（180日）</option>
+                          <option value="8760">12ヶ月（365日）</option>
+                          <option value="0">無期限</option>
+                        </select>
                       </div>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      APIの制限に問題がある場合は、小さい値に設定してください。推奨: 1〜10
-                    </p>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="updateInterval" className="block text-sm font-medium text-gray-700 mb-1">
+                        更新間隔
+                      </label>
+                      <select
+                        id="updateInterval"
+                        value={updateInterval}
+                        onChange={(e) => setUpdateInterval(parseInt(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="1">1時間</option>
+                        <option value="2">2時間</option>
+                        <option value="3">3時間</option>
+                        <option value="6">6時間</option>
+                        <option value="12">12時間</option>
+                        <option value="24">24時間</option>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        CORS対策
+                      </label>
+                      <div className="space-y-2">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={directApiAccess}
+                            onChange={(e) => setDirectApiAccess(e.target.checked)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm">直接APIアクセス（CORSプラグイン必須）</span>
+                        </label>
+                        <div>
+                          <input
+                            type="text"
+                            value={proxyUrl}
+                            onChange={(e) => setProxyUrl(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="カスタムプロキシURL（オプション）"
+                            disabled={directApiAccess}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -536,19 +725,30 @@ B087F3CCG5 9,927
 B07NWSLSXM 11,067"
                   required
                 />
-                <button
-                  type="button"
-                  className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
-                  onClick={() => {
-                    navigator.clipboard.readText().then(text => {
-                      setPastedData(text);
-                    }).catch(err => {
-                      setError('クリップボードの読み取りに失敗しました。手動でペーストしてください。');
-                    });
-                  }}
-                >
-                  <Icon name="clipboard" />
-                </button>
+                <div className="absolute top-2 right-2 flex space-x-2">
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-gray-600"
+                    onClick={() => setPastedData('')}
+                    title="クリア"
+                  >
+                    <Icon name="trash-2" />
+                  </button>
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-gray-600"
+                    onClick={() => {
+                      navigator.clipboard.readText().then(text => {
+                        setPastedData(text);
+                      }).catch(err => {
+                        setError('クリップボードの読み取りに失敗しました。手動でペーストしてください。');
+                      });
+                    }}
+                    title="クリップボードから貼り付け"
+                  >
+                    <Icon name="clipboard" />
+                  </button>
+                </div>
               </div>
               {validProducts > 0 && (
                 <div className="mt-2 text-sm text-gray-600">
@@ -610,11 +810,14 @@ B07NWSLSXM 11,067"
               >
                 {loading ? (
                   <>
-                    <Icon name="refresh-cw" className="animate-spin mr-2" />
+                    <Icon name="loader" className="animate-spin mr-2" />
                     <span>トラッキング登録中...</span>
                   </>
                 ) : (
-                  <span>トラッキング登録</span>
+                  <>
+                    <Icon name="upload-cloud" className="mr-2" />
+                    <span>トラッキング登録</span>
+                  </>
                 )}
               </button>
             </div>
@@ -631,7 +834,7 @@ B07NWSLSXM 11,067"
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2.5">
                   <div 
-                    className="bg-blue-600 h-2.5 rounded-full" 
+                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
                     style={{ width: `${progress}%` }}
                   ></div>
                 </div>
@@ -642,7 +845,7 @@ B07NWSLSXM 11,067"
           {error && (
             <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded">
               <div className="flex">
-                <Icon name="alert-circle" className="text-red-500 mr-2" />
+                <Icon name="alert-circle" className="text-red-500 mr-2 flex-shrink-0" />
                 <div className="text-red-700">
                   <p className="font-medium">エラーが発生しました：</p>
                   <p>{error}</p>
@@ -671,6 +874,17 @@ B07NWSLSXM 11,067"
                         </div>
                       )}
                       
+                      {error.includes('CORS') && (
+                        <div>
+                          <p className="font-medium">CORS制限エラー：</p>
+                          <ul className="list-disc ml-5">
+                            <li>「詳細設定」から「直接APIアクセス」を有効にし、ブラウザのCORS制限を無効化するプラグインを使用してください</li>
+                            <li>または、有効なプロキシURLを設定してください</li>
+                            <li>推奨: 自分でCORSプロキシを設定するか、バックエンドサービスを用意してください</li>
+                          </ul>
+                        </div>
+                      )}
+                      
                       <div>
                         <p className="font-medium">一般的な解決策：</p>
                         <ul className="list-disc ml-5">
@@ -688,7 +902,7 @@ B07NWSLSXM 11,067"
           {success && (
             <div className="mb-6 p-4 bg-green-50 border-l-4 border-green-500 rounded">
               <div className="flex">
-                <Icon name="check" className="text-green-500 mr-2" />
+                <Icon name="check-circle" className="text-green-500 mr-2 flex-shrink-0" />
                 <p className="text-green-700">{success}</p>
               </div>
             </div>
@@ -736,10 +950,22 @@ B07NWSLSXM 11,067"
             <h3 className="text-lg font-medium text-gray-700 mb-3">注意事項</h3>
             <ul className="list-disc ml-5 text-sm text-gray-600 space-y-1">
               <li>Keepa APIキーは <a href="https://keepa.com/#!api" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">https://keepa.com/#!api</a> から取得できます</li>
-              <li>トラッキング対象期間は6ヶ月に設定されています</li>
+              <li>トラッキング対象期間はデフォルトで6ヶ月に設定されています（詳細設定で変更可能）</li>
               <li>API制限に問題がある場合は、バッチサイズを小さくして（1-5程度）再試行してください</li>
+              <li>CORS制限によりブラウザから直接KeepaのAPIにアクセスできない場合があります：
+                <ul className="list-disc ml-5 mt-1">
+                  <li>CORSを無効化するブラウザ拡張機能を使用する</li>
+                  <li>プロキシサーバーを設定する</li>
+                  <li>ローカルでホスティングする場合はブラウザのセキュリティオプションを変更する</li>
+                </ul>
+              </li>
             </ul>
           </div>
+          
+          <footer className="mt-12 pt-6 border-t border-gray-200 text-center text-gray-500 text-sm">
+            <p>L-Track - Keepaトラッキング自動登録ツール</p>
+            <p className="mt-1">バージョン 1.1.0</p>
+          </footer>
         </div>
       );
     };
