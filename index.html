@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>L-Track - Keepaトラッキング自動登録ツール</title>
+  
+  <!-- Tailwind CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  
+  <!-- React + React DOM -->
+  <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+  
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Feather Icons -->
+  <script src="https://unpkg.com/feather-icons"></script>
+  
+  <style>
+    /* シンプルなアイコン代替スタイル */
+    .icon {
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      margin-right: 0.25em;
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // シンプルなアイコンコンポーネント
+    const Icon = ({ name, className = "" }) => {
+      React.useEffect(() => {
+        if (window.feather) {
+          feather.replace();
+        }
+      }, []);
+      
+      return <i data-feather={name} className={`icon ${className}`}></i>;
+    };
+    
+    // Main component
+    const KeepaTracker = () => {
+      const [apiKey, setApiKey] = React.useState('');
+      const [pastedData, setPastedData] = React.useState('');
+      const [trackingOptions, setTrackingOptions] = React.useState({
+        buyBox: true,
+        amazon: false,
+        new: false,
+        used: false
+      });
+      const [results, setResults] = React.useState([]);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const [success, setSuccess] = React.useState('');
+      const [validProducts, setValidProducts] = React.useState(0);
+      const [skippedRows, setSkippedRows] = React.useState(0);
+      const [batchSize, setBatchSize] = React.useState(5);
+      const [progress, setProgress] = React.useState(0);
+      const [totalBatches, setTotalBatches] = React.useState(0);
+      const [currentBatch, setCurrentBatch] = React.useState(0);
+      const [showSettings, setShowSettings] = React.useState(false);
+      const [notification, setNotification] = React.useState(null);
+
+      // 通知を表示するための効果
+      React.useEffect(() => {
+        if (notification) {
+          const timer = setTimeout(() => {
+            setNotification(null);
+          }, 5000);
+          return () => clearTimeout(timer);
+        }
+      }, [notification]);
+
+      // Parse pasted spreadsheet data - シンプル2列バージョン
+      const parseData = (data) => {
+        // 空白行の除去と正規化
+        const cleanedData = data.trim().replace(/\r\n/g, '\n');
+        const lines = cleanedData.split('\n');
+        
+        // 各行を解析
+        let skippedCount = 0;
+        const validRows = [];
+        
+        // ヘッダー行があるかチェック（最初の行がASINパターンを含まない場合はヘッダーと見なす）
+        const firstLine = lines[0].trim();
+        const hasHeader = !/B0[0-9A-Z]{8}/i.test(firstLine);
+        const startIndex = hasHeader ? 1 : 0;
+        
+        console.log('ヘッダー行検出:', hasHeader ? 'あり' : 'なし');
+        
+        for (let i = startIndex; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) {
+            skippedCount++;
+            continue;
+          }
+          
+          // ASINを検出（B0で始まる10文字）
+          const asinMatch = line.match(/B0[0-9A-Z]{8}/i);
+          if (!asinMatch) {
+            console.log('ASINが見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
+          
+          const asin = asinMatch[0].toUpperCase();
+          
+          // ASINを除去して価格を探す
+          const priceText = line.replace(asin, '').trim();
+          const priceNumber = parseInt(priceText.replace(/[^\d]/g, '')) || 0;
+          
+          if (priceNumber <= 0) {
+            console.log('有効な価格が見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
+          
+          validRows.push({
+            lineNumber: i + 1,
+            asin,
+            price: priceNumber
+          });
+          
+          console.log(`解析結果: ASIN=${asin}, 価格=${priceNumber}`);
+        }
+        
+        setSkippedRows(skippedCount);
+        setValidProducts(validRows.length);
+        
+        if (validRows.length === 0) {
+          throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
+        }
+        
+        return validRows;
+      };
+
+// Generate tracking creation objects
+      const generateTrackingObjects = (parsedData) => {
+        return parsedData.map(item => {
+          // Create threshold values based on selected tracking options
+          const thresholdValues = [];
+          
+          if (trackingOptions.amazon) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: 5, // Japan (co.jp)
+              csvType: 0, // AMAZON
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.new) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: 5, // Japan (co.jp)
+              csvType: 1, // NEW
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.used) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: 5, // Japan (co.jp)
+              csvType: 2, // USED
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.buyBox) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: 5, // Japan (co.jp)
+              csvType: 18, // BUY_BOX_SHIPPING
+              isDrop: true
+            });
+          }
+          
+          return {
+            asin: item.asin,
+            ttl: 4320, // 6 months in hours (6*30*24)
+            expireNotify: true,
+            desiredPricesInMainCurrency: true,
+            mainDomainId: 5, // Japan (co.jp)
+            updateInterval: 1, // 1 hour
+            thresholdValues,
+            notificationType: [false, false, false, false, false, true, false] // API notifications only
+          };
+        });
+      };
+
+      // Submit tracking to Keepa API
+      const submitTracking = async (trackingObjects) => {
+        if (!apiKey) {
+          throw new Error('Keepa APIキーを入力してください。');
+        }
+        
+        // ここがCORS対策のために変更された部分
+        const url = `https://corsproxy.io/?https://api.keepa.com/tracking?key=${apiKey}&type=add`;
+        
+        // Process in smaller batches based on user-defined batch size
+        const results = [];
+        
+        // Calculate total batches for progress tracking
+        const totalBatchCount = Math.ceil(trackingObjects.length / batchSize);
+        setTotalBatches(totalBatchCount);
+        setCurrentBatch(0);
+        setProgress(0);
+        
+        for (let i = 0; i < trackingObjects.length; i += batchSize) {
+          const batch = trackingObjects.slice(i, i + batchSize);
+          setCurrentBatch(Math.floor(i / batchSize) + 1);
+          setProgress(Math.round((i / trackingObjects.length) * 100));
+          
+          try {
+            // Show detailed request data for debugging
+            console.log(`バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} 処理中...`);
+            console.log('リクエスト先URL:', url);
+            console.log('リクエストデータ:', JSON.stringify(batch, null, 2));
+            
+            // Make the actual API call to Keepa
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(batch),
+            });
+            
+            const responseText = await response.text();
+            let data;
+            
+            try {
+              data = JSON.parse(responseText);
+              console.log('APIレスポンス:', data);
+            } catch (e) {
+              console.error('JSONパース失敗:', responseText);
+              throw new Error(`APIレスポンスの解析に失敗しました: ${responseText.substring(0, 100)}...`);
+            }
+            
+            // Check for API errors
+            if (data.error) {
+              // APIレート制限エラーの検出
+              if (typeof data.error === 'string' && 
+                (data.error.includes('rate limit') || 
+                data.error.includes('制限') || 
+                data.error.includes('limit'))) {
+                throw new Error(`API制限エラー: ${data.error} - トークン補充を待つか、バッチサイズを小さくしてください。`);
+              }
+              
+              // トークン不足エラーの検出
+              if (typeof data.error === 'string' && 
+                (data.error.includes('token') || 
+                data.error.includes('トークン'))) {
+                throw new Error(`トークン不足エラー: ${data.error} - Keepaアカウントのトークン残高を確認してください。`);
+              }
+              
+              // その他のエラー
+              throw new Error(`Keepa API エラー: ${data.error}`);
+            }
+            
+            // Process successful responses
+            if (data.trackings && Array.isArray(data.trackings)) {
+              results.push(...data.trackings.map(tracking => ({
+                asin: tracking.asin,
+                success: true,
+                message: '登録成功',
+                details: tracking
+              })));
+              
+              // 各バッチ完了時に通知
+              setNotification({
+                type: 'info',
+                message: `バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} が完了しました（${batch.length}件）`
+              });
+              
+              // 短い遅延を挿入して、APIレート制限を回避
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } else {
+              // If no trackings array is returned, something is wrong
+              const errorMsg = `Keepa APIから予期しないレスポンス形式: ${JSON.stringify(data).substring(0, 100)}...`;
+              console.error(errorMsg);
+              throw new Error(errorMsg);
+            }
+          } catch (error) {
+            console.error('API呼び出しエラー:', error);
+            
+            // Handle API errors
+            batch.forEach(obj => {
+              results.push({
+                asin: obj.asin,
+                success: false,
+                message: error.message || 'API呼び出し中にエラーが発生しました'
+              });
+            });
+            
+            // API制限エラーの場合は処理を中断
+            if (error.message && (
+                error.message.includes('API制限エラー') || 
+                error.message.includes('トークン不足エラー'))) {
+              setNotification({
+                type: 'error',
+                message: error.message
+              });
+              break; // 処理を中断
+            }
+          }
+        }
+        
+        // 最終進捗を100%に設定
+        setProgress(100);
+        
+        return results;
+      };
+
+      // Handle form submission
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        setSuccess('');
+        setResults([]);
+        setValidProducts(0);
+        setSkippedRows(0);
+        setProgress(0);
+        
+        try {
+          // Parse the pasted data
+          const parsedData = parseData(pastedData);
+          
+          if (parsedData.length === 0) {
+            throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
+          }
+          
+          // Check if any tracking options are selected
+          if (!trackingOptions.buyBox && !trackingOptions.amazon && !trackingOptions.new && !trackingOptions.used) {
+            throw new Error('トラッキングする価格条件を少なくとも一つ選択してください。');
+          }
+          
+          // Generate tracking objects
+          const trackingObjects = generateTrackingObjects(parsedData);
+          
+          // デバッグ情報を表示
+          console.log('処理対象商品数:', parsedData.length);
+          console.log('生成されたトラッキングオブジェクト例:', JSON.stringify(trackingObjects[0], null, 2));
+          console.log('バッチサイズ:', batchSize);
+          
+          // Submit to Keepa API
+          setNotification({
+            type: 'info',
+            message: `${parsedData.length}件の商品を登録開始します（バッチサイズ: ${batchSize}）`
+          });
+          
+          const apiResults = await submitTracking(trackingObjects);
+          
+          // Update state with results
+          setResults(apiResults);
+          
+          // Calculate success rate
+          const successCount = apiResults.filter(r => r.success).length;
+          setSuccess(`${successCount}/${apiResults.length} 商品のトラッキングが正常に登録されました。`);
+          
+          // 完了通知
+          setNotification({
+            type: 'success',
+            message: `登録完了！ ${successCount}/${apiResults.length} 商品が正常に登録されました`
+          });
+          
+          if (successCount === 0) {
+            setError('登録に成功した商品がありません。APIキーが正しいか、またはKeepaアカウントのトークン残高を確認してください。');
+          }
+        } catch (err) {
+          console.error('フォーム送信エラー:', err);
+          setError(err.message);
+          
+          setNotification({
+            type: 'error',
+            message: `エラーが発生しました: ${err.message}`
+          });
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // Handle paste from clipboard
+      const handlePaste = (e) => {
+        setPastedData(e.target.value);
+        
+        try {
+          // データの予備検証を行う
+          const data = e.target.value;
+          const lines = data.trim().split('\n');
+          
+          if (lines.length > 0) {
+            // ASIN検出を試みる
+            let asinCount = 0;
+            
+            for (let i = 0; i < Math.min(5, lines.length); i++) {
+              if (/B0[0-9A-Z]{8}/i.test(lines[i])) {
+                asinCount++;
+              }
+            }
+            
+            console.log(`予備検証: ${lines.length}行中、少なくとも${asinCount}行にASINを検出`);
+          }
+        } catch (err) {
+          console.error('データ予備検証エラー:', err);
+        }
+      };
+
+return (
+        <div className="max-w-6xl mx-auto p-4">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-gray-800 mb-2">L-Track</h1>
+            <p className="text-gray-600">ASINと価格をコピーして、Keepaのトラッキングを一括登録できます。</p>
+          </div>
+          
+          {notification && (
+            <div className={`fixed top-4 right-4 p-4 rounded-md shadow-lg max-w-md z-50 ${
+              notification.type === 'success' ? 'bg-green-100 text-green-800' : 
+              notification.type === 'error' ? 'bg-red-100 text-red-800' : 
+              'bg-blue-100 text-blue-800'
+            }`}>
+              <div className="flex items-start">
+                {notification.type === 'success' && <Icon name="check" className="text-green-500" />}
+                {notification.type === 'error' && <Icon name="alert-circle" className="text-red-500" />}
+                {notification.type === 'info' && <Icon name="info" className="text-blue-500" />}
+                <div>
+                  <p className="font-medium">{notification.message}</p>
+                </div>
+                <button 
+                  onClick={() => setNotification(null)}
+                  className="ml-auto -mr-1 -mt-1 p-1 text-gray-500 hover:text-gray-700 focus:outline-none"
+                >
+                  <Icon name="x" />
+                </button>
+              </div>
+            </div>
+          )}
+          
+          <div className="bg-blue-50 p-4 rounded-lg mb-8">
+            <div className="flex gap-2">
+              <Icon name="info" className="text-blue-500" />
+              <div>
+                <h3 className="text-blue-700 font-medium">使い方</h3>
+                <ol className="list-decimal ml-5 text-blue-700 text-sm">
+                  <li>スプレッドシートからASINと基準価格の2列をコピー</li>
+                  <li>下のテキストエリアにペースト</li>
+                  <li>KeepaのAPIキーを入力</li>
+                  <li>トラッキングしたい価格の種類を選択</li>
+                  <li>「トラッキング登録」ボタンをクリック</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+          
+          <form onSubmit={handleSubmit}>
+            <div className="mb-6">
+              <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700 mb-1">
+                Keepa APIキー
+              </label>
+              <input
+                type="text"
+                id="apiKey"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="APIキーを入力してください"
+                required
+              />
+            </div>
+            
+            <div className="mb-6">
+              <div className="flex justify-between items-center mb-1">
+                <label htmlFor="pastedData" className="block text-sm font-medium text-gray-700">
+                  スプレッドシートデータ
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                >
+                  <Icon name="settings" className="mr-1" />
+                  <span>詳細設定</span>
+                </button>
+              </div>
+              
+              {showSettings && (
+                <div className="mb-4 p-4 bg-gray-50 rounded-md">
+                  <div className="mb-2">
+                    <label htmlFor="batchSize" className="block text-sm font-medium text-gray-700 mb-1">
+                      バッチサイズ（一度に処理する商品数）
+                    </label>
+                    <div className="flex items-center">
+                      <input
+                        type="range"
+                        id="batchSize"
+                        min="1"
+                        max="50"
+                        value={batchSize}
+                        onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                        className="w-full mr-3"
+                      />
+                      <div className="flex items-center">
+                        <input
+                          type="number"
+                          value={batchSize}
+                          onChange={(e) => setBatchSize(parseInt(e.target.value) || 1)}
+                          min="1"
+                          max="50"
+                          className="w-16 px-2 py-1 border border-gray-300 rounded-md text-center"
+                        />
+                        <span className="ml-2 text-gray-600 text-sm">件</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      APIの制限に問題がある場合は、小さい値に設定してください。推奨: 1〜10
+                    </p>
+                  </div>
+                </div>
+              )}
+              
+              <div className="relative">
+                <textarea
+                  id="pastedData"
+                  value={pastedData}
+                  onChange={handlePaste}
+                  rows={10}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="ASINと価格を貼り付けてください。例:
+B087F3CCG5 9,927
+B07NWSLSXM 11,067"
+                  required
+                />
+                <button
+                  type="button"
+                  className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
+                  onClick={() => {
+                    navigator.clipboard.readText().then(text => {
+                      setPastedData(text);
+                    }).catch(err => {
+                      setError('クリップボードの読み取りに失敗しました。手動でペーストしてください。');
+                    });
+                  }}
+                >
+                  <Icon name="clipboard" />
+                </button>
+              </div>
+              {validProducts > 0 && (
+                <div className="mt-2 text-sm text-gray-600">
+                  <span className="font-medium text-green-600">{validProducts}件</span>の有効な商品データが見つかりました
+                  {skippedRows > 0 && <span>（{skippedRows}行はスキップされました）</span>}
+                </div>
+              )}
+            </div>
+            
+            <div className="mb-6">
+              <p className="block text-sm font-medium text-gray-700 mb-2">
+                トラッキングオプション
+              </p>
+              <div className="flex flex-wrap gap-4">
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={trackingOptions.buyBox}
+                    onChange={(e) => setTrackingOptions({...trackingOptions, buyBox: e.target.checked})}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>バイボックス</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={trackingOptions.amazon}
+                    onChange={(e) => setTrackingOptions({...trackingOptions, amazon: e.target.checked})}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>Amazon</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={trackingOptions.new}
+                    onChange={(e) => setTrackingOptions({...trackingOptions, new: e.target.checked})}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>新品</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={trackingOptions.used}
+                    onChange={(e) => setTrackingOptions({...trackingOptions, used: e.target.checked})}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>中古</span>
+                </label>
+              </div>
+            </div>
+            
+            <div className="mb-6">
+              <button
+                type="submit"
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <Icon name="refresh-cw" className="animate-spin mr-2" />
+                    <span>トラッキング登録中...</span>
+                  </>
+                ) : (
+                  <span>トラッキング登録</span>
+                )}
+              </button>
+            </div>
+            
+            {loading && (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-sm font-medium text-gray-700">
+                    処理中... {currentBatch}/{totalBatches} バッチ
+                  </div>
+                  <div className="text-sm text-gray-500">
+                    {progress}%
+                  </div>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2.5">
+                  <div 
+                    className="bg-blue-600 h-2.5 rounded-full" 
+                    style={{ width: `${progress}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+          </form>
+
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded">
+              <div className="flex">
+                <Icon name="alert-circle" className="text-red-500 mr-2" />
+                <div className="text-red-700">
+                  <p className="font-medium">エラーが発生しました：</p>
+                  <p>{error}</p>
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-sm text-red-600">トラブルシューティング</summary>
+                    <div className="mt-2 text-sm space-y-2">
+                      {error.includes('API制限') && (
+                        <div>
+                          <p className="font-medium">API制限エラー：</p>
+                          <ul className="list-disc ml-5">
+                            <li>バッチサイズを小さくしてください（1-3程度）</li>
+                            <li>少し時間をおいてから再試行してください</li>
+                            <li>Keepaアカウントのトークン使用状況を確認してください</li>
+                          </ul>
+                        </div>
+                      )}
+                      
+                      {error.includes('トークン') && (
+                        <div>
+                          <p className="font-medium">トークン不足：</p>
+                          <ul className="list-disc ml-5">
+                            <li>Keepaアカウントのトークン残高を確認してください</li>
+                            <li>トラッキングによるトークン消費量を確認してください</li>
+                            <li>より高いAPIプランへのアップグレードを検討してください</li>
+                          </ul>
+                        </div>
+                      )}
+                      
+                      <div>
+                        <p className="font-medium">一般的な解決策：</p>
+                        <ul className="list-disc ml-5">
+                          <li>APIキーが正しいことを確認してください</li>
+                          <li>少数の商品（1-2件）から始めてテストしてください</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {success && (
+            <div className="mb-6 p-4 bg-green-50 border-l-4 border-green-500 rounded">
+              <div className="flex">
+                <Icon name="check" className="text-green-500 mr-2" />
+                <p className="text-green-700">{success}</p>
+              </div>
+            </div>
+          )}
+          
+          {results.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-medium text-gray-700 mb-3">登録結果</h3>
+              <div className="bg-white border border-gray-200 rounded-md overflow-hidden">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ASIN</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">結果</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">メッセージ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {results.map((result, index) => (
+                      <tr key={index} className={result.success ? 'bg-green-50' : 'bg-red-50'}>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.asin}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          {result.success ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                              <Icon name="check" className="mr-1" />
+                              成功
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                              <Icon name="x" className="mr-1" />
+                              失敗
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{result.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          
+          <div className="mt-8 pt-6 border-t border-gray-200">
+            <h3 className="text-lg font-medium text-gray-700 mb-3">注意事項</h3>
+            <ul className="list-disc ml-5 text-sm text-gray-600 space-y-1">
+              <li>Keepa APIキーは <a href="https://keepa.com/#!api" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">https://keepa.com/#!api</a> から取得できます</li>
+              <li>トラッキング対象期間は6ヶ月に設定されています</li>
+              <li>API制限に問題がある場合は、バッチサイズを小さくして（1-5程度）再試行してください</li>
+            </ul>
+          </div>
+        </div>
+      );
+    };
+
+    // Render the component
+    ReactDOM.render(<KeepaTracker />, document.getElementById('root'));
+  </script>
+  
+  <!-- アイコンの初期化 -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.feather) {
+        feather.replace();
+      }
+    });
+  </script>
+</body>
+</html>
