@@ -34,11 +34,10 @@
   <script type="text/babel">
     // シンプルなアイコンコンポーネント
     const Icon = ({ name, className = "" }) => {
-      React.useEffect(() => {
-        if (window.feather) {
+      // feather依存のコードを削除し、シンプルなテキストを返す
+      return <span className={`icon ${className}`}>{name}</span>;
           feather.replace();
-        }
-      }, []);
+    };
       
       return <i data-feather={name} className={`icon ${className}`}></i>;
     };
@@ -201,7 +200,7 @@
         }
         
         // ここがCORS対策のために変更された部分
-        const url = `https://corsproxy.io/?https://api.keepa.com/tracking?key=${apiKey}&type=add`;
+        const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://api.keepa.com/tracking?key=${apiKey}&type=add`)}`;
         
         // Process in smaller batches based on user-defined batch size
         const results = [];
