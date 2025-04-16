@@ -22,1214 +22,1179 @@
   <div id="root"></div>
 
   <script type="text/babel">
-
-// IconコンポーネントをJSXを使わない形式に変更
-function Icon(props) {
-  const name = props.name || "";
-  const className = props.className || "";
-  
-  React.useEffect(function() {
-    if (window.feather) {
-      window.feather.replace();
-    }
-  }, [name]);
-  
-  return React.createElement("i", {
-    "data-feather": name,
-    className: className
-  });
-}
-
-// Main component
-function KeepaTracker() {
-  // アマゾンドメインの選択肢
-  const amazonDomains = [
-    { id: 1, name: "com", label: "アメリカ (com)" },
-    { id: 2, name: "co.uk", label: "イギリス (co.uk)" },
-    { id: 3, name: "de", label: "ドイツ (de)" },
-    { id: 4, name: "fr", label: "フランス (fr)" },
-    { id: 5, name: "co.jp", label: "日本 (co.jp)" },
-    { id: 6, name: "ca", label: "カナダ (ca)" },
-    { id: 8, name: "it", label: "イタリア (it)" },
-    { id: 9, name: "es", label: "スペイン (es)" },
-    { id: 10, name: "in", label: "インド (in)" },
-    { id: 11, name: "com.mx", label: "メキシコ (com.mx)" },
-    { id: 12, name: "com.br", label: "ブラジル (com.br)" }
-  ];
-  
-  // 状態の初期化
-  const [apiKey, setApiKey] = React.useState(function() {
-    // ローカルストレージから読み込み
-    return localStorage.getItem('keepaApiKey') || '';
-  });
-  const [pastedData, setPastedData] = React.useState('');
-  const [trackingOptions, setTrackingOptions] = React.useState({
-    buyBox: true,
-    amazon: false,
-    new: false,
-    used: false
-  });
-  const [results, setResults] = React.useState([]);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState('');
-  const [success, setSuccess] = React.useState('');
-  const [validProducts, setValidProducts] = React.useState(0);
-  const [skippedRows, setSkippedRows] = React.useState(0);
-  const [batchSize, setBatchSize] = React.useState(5);
-  const [progress, setProgress] = React.useState(0);
-  const [totalBatches, setTotalBatches] = React.useState(0);
-  const [currentBatch, setCurrentBatch] = React.useState(0);
-  const [showSettings, setShowSettings] = React.useState(false);
-  const [notification, setNotification] = React.useState(null);
-  const [selectedDomain, setSelectedDomain] = React.useState(5); // デフォルトは日本
-  const [saveApiKey, setSaveApiKey] = React.useState(true);
-  const [ttl, setTtl] = React.useState(4320); // デフォルトは6ヶ月
-  const [updateInterval, setUpdateInterval] = React.useState(1); // デフォルトは1時間
-  const [directApiAccess, setDirectApiAccess] = React.useState(false);
-  const [proxyUrl, setProxyUrl] = React.useState('');
-
-  // APIキーが変更された時にローカルストレージに保存
-  React.useEffect(function() {
-    if (saveApiKey && apiKey) {
-      localStorage.setItem('keepaApiKey', apiKey);
-    } else if (!saveApiKey) {
-      localStorage.removeItem('keepaApiKey');
-    }
-  }, [apiKey, saveApiKey]);
-
-  // 通知を表示するための効果
-  React.useEffect(function() {
-    if (notification) {
-      const timer = setTimeout(function() {
-        setNotification(null);
-      }, 5000);
-      return function() { clearTimeout(timer); };
-    }
-  }, [notification]);
-
-// Parse pasted spreadsheet data - 改良版
-const parseData = function(data) {
-  // 空白行の除去と正規化
-  const cleanedData = data.trim().replace(/\r\n/g, '\n');
-  const lines = cleanedData.split('\n');
-  
-  if (lines.length === 0) {
-    throw new Error('データが見つかりません。有効なデータを貼り付けてください。');
-  }
-  
-  // 各行を解析
-  let skippedCount = 0;
-  const validRows = [];
-  
-  // ヘッダー行があるかチェック
-  const firstLine = lines[0].trim();
-  const hasHeader = !/B0[0-9A-Z]{8}/i.test(firstLine);
-  const startIndex = hasHeader ? 1 : 0;
-  
-  console.log('ヘッダー行検出:', hasHeader ? 'あり' : 'なし');
-  
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) {
-      skippedCount++;
-      continue;
-    }
-    
-    // ASINを検出（B0で始まる10文字）
-    const asinMatch = line.match(/B0[0-9A-Z]{8}/i);
-    if (!asinMatch) {
-      console.log('ASINが見つかりません:', line);
-      skippedCount++;
-      continue;
-    }
-    
-    const asin = asinMatch[0].toUpperCase();
-    
-    // ASINを除去して価格を探す
-    // 様々な価格形式に対応
-    let priceText = line.replace(asin, '').trim();
-    // カンマやピリオドを含む価格パターンを検出
-    let priceMatch = priceText.match(/[\d,]+(\.\d+)?/);
-    if (!priceMatch) {
-      console.log('有効な価格が見つかりません:', line);
-      skippedCount++;
-      continue;
-    }
-    
-    // 価格をきれいにする
-    let cleanPrice = priceMatch[0].replace(/,/g, '');
-    let priceNumber = parseFloat(cleanPrice);
-    
-    // 小数点以下がある場合は最小通貨単位（例: 円、セント）に変換
-    if (cleanPrice.includes('.')) {
-      // 小数点があれば通貨単位に変換（例: $10.99 → 1099 セント）
-      priceNumber = Math.round(priceNumber * 100);
-    } else {
-      // 小数点がなければ整数として解析
-      priceNumber = parseInt(cleanPrice, 10);
-    }
-    
-    if (isNaN(priceNumber) || priceNumber <= 0) {
-      console.log('有効な価格が見つかりません:', line);
-      skippedCount++;
-      continue;
-    }
-    
-    validRows.push({
-      lineNumber: i + 1,
-      asin,
-      price: priceNumber
-    });
-    
-    console.log(`解析結果: ASIN=${asin}, 価格=${priceNumber}`);
-  }
-  
-  setSkippedRows(skippedCount);
-  setValidProducts(validRows.length);
-  
-  if (validRows.length === 0) {
-    throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
-  }
-  
-  return validRows;
-};
-
-// Generate tracking creation objects - 改良版
-const generateTrackingObjects = function(parsedData) {
-  return parsedData.map(function(item) {
-    // Create threshold values based on selected tracking options
-    const thresholdValues = [];
-    
-    if (trackingOptions.amazon) {
-      thresholdValues.push({
-        thresholdValue: item.price,
-        domain: parseInt(selectedDomain),
-        csvType: 0, // AMAZON
-        isDrop: true
+    // IconコンポーネントをJSXを使わない形式に変更
+    function Icon(props) {
+      const name = props.name || "";
+      const className = props.className || "";
+      
+      React.useEffect(function() {
+        if (window.feather) {
+          window.feather.replace();
+        }
+      }, [name]);
+      
+      return React.createElement("i", {
+        "data-feather": name,
+        className: className
       });
     }
     
-    if (trackingOptions.new) {
-      thresholdValues.push({
-        thresholdValue: item.price,
-        domain: parseInt(selectedDomain),
-        csvType: 1, // NEW
-        isDrop: true
+    // Main component
+    function KeepaTracker() {
+      // アマゾンドメインの選択肢
+      const amazonDomains = [
+        { id: 1, name: "com", label: "アメリカ (com)" },
+        { id: 2, name: "co.uk", label: "イギリス (co.uk)" },
+        { id: 3, name: "de", label: "ドイツ (de)" },
+        { id: 4, name: "fr", label: "フランス (fr)" },
+        { id: 5, name: "co.jp", label: "日本 (co.jp)" },
+        { id: 6, name: "ca", label: "カナダ (ca)" },
+        { id: 8, name: "it", label: "イタリア (it)" },
+        { id: 9, name: "es", label: "スペイン (es)" },
+        { id: 10, name: "in", label: "インド (in)" },
+        { id: 11, name: "com.mx", label: "メキシコ (com.mx)" },
+        { id: 12, name: "com.br", label: "ブラジル (com.br)" }
+      ];
+      
+      // 状態の初期化
+      const [apiKey, setApiKey] = React.useState(function() {
+        // ローカルストレージから読み込み
+        return localStorage.getItem('keepaApiKey') || '';
       });
-    }
-    
-    if (trackingOptions.used) {
-      thresholdValues.push({
-        thresholdValue: item.price,
-        domain: parseInt(selectedDomain),
-        csvType: 2, // USED
-        isDrop: true
+      const [pastedData, setPastedData] = React.useState('');
+      const [trackingOptions, setTrackingOptions] = React.useState({
+        buyBox: true,
+        amazon: false,
+        new: false,
+        used: false
       });
-    }
-    
-    if (trackingOptions.buyBox) {
-      thresholdValues.push({
-        thresholdValue: item.price,
-        domain: parseInt(selectedDomain),
-        csvType: 18, // BUY_BOX_SHIPPING
-        isDrop: true
-      });
-    }
-    
-    return {
-      asin: item.asin,
-      ttl: parseInt(ttl), // ユーザー設定可能な時間
-      expireNotify: true,
-      desiredPricesInMainCurrency: true,
-      mainDomainId: parseInt(selectedDomain), // ユーザー設定可能なドメイン
-      updateInterval: parseInt(updateInterval), // ユーザー設定可能な更新間隔
-      thresholdValues,
-      notificationType: [false, false, false, false, false, true, false] // API notifications only
-    };
-  });
-};
+      const [results, setResults] = React.useState([]);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const [success, setSuccess] = React.useState('');
+      const [validProducts, setValidProducts] = React.useState(0);
+      const [skippedRows, setSkippedRows] = React.useState(0);
+      const [batchSize, setBatchSize] = React.useState(5);
+      const [progress, setProgress] = React.useState(0);
+      const [totalBatches, setTotalBatches] = React.useState(0);
+      const [currentBatch, setCurrentBatch] = React.useState(0);
+      const [showSettings, setShowSettings] = React.useState(false);
+      const [notification, setNotification] = React.useState(null);
+      const [selectedDomain, setSelectedDomain] = React.useState(5); // デフォルトは日本
+      const [saveApiKey, setSaveApiKey] = React.useState(true);
+      const [ttl, setTtl] = React.useState(4320); // デフォルトは6ヶ月
+      const [updateInterval, setUpdateInterval] = React.useState(1); // デフォルトは1時間
+      const [directApiAccess, setDirectApiAccess] = React.useState(false);
+      const [proxyUrl, setProxyUrl] = React.useState('');
 
-// Submit tracking to Keepa API - 改良版
-const submitTracking = async function(trackingObjects) {
-  if (!apiKey) {
-    throw new Error('Keepa APIキーを入力してください。');
-  }
-  
-  // APIエンドポイントを決定
-  let apiEndpoint;
-  if (directApiAccess) {
-    // 直接APIアクセス
-    apiEndpoint = `https://api.keepa.com/tracking`;
-  } else if (proxyUrl) {
-    // カスタムプロキシを使用
-    apiEndpoint = proxyUrl;
-  } else {
-    // CORS対策のためのフォールバック
-    throw new Error('CORS制限のため、直接APIアクセスかカスタムプロキシURLを設定してください。');
-  }
-  
-  // Process in smaller batches
-  const results = [];
-  
-  // Calculate total batches for progress tracking
-  const totalBatchCount = Math.ceil(trackingObjects.length / batchSize);
-  setTotalBatches(totalBatchCount);
-  setCurrentBatch(0);
-  setProgress(0);
-  
-  for (let i = 0; i < trackingObjects.length; i += batchSize) {
-    const batch = trackingObjects.slice(i, i + batchSize);
-    setCurrentBatch(Math.floor(i / batchSize) + 1);
-    setProgress(Math.round((i / trackingObjects.length) * 100));
-    
-    try {
-      // Show detailed request data for debugging
-      console.log(`バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} 処理中...`);
-      console.log('リクエスト先URL:', apiEndpoint);
-      console.log('リクエストデータ:', JSON.stringify(batch, null, 2));
-      
-      // Make the API call to Keepa
-      const response = await fetch(apiEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          key: apiKey,
-          type: 'add',
-          tracking: batch
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP エラー: ${response.status} ${response.statusText}`);
-      }
-      
-      const responseText = await response.text();
-      let data;
-      
-      try {
-        data = JSON.parse(responseText);
-        console.log('APIレスポンス:', data);
-      } catch (e) {
-        console.error('JSONパース失敗:', responseText);
-        throw new Error(`APIレスポンスの解析に失敗しました: ${responseText.substring(0, 100)}...`);
-      }
-      
-      // Check for API errors
-      if (data.error) {
-        // APIレート制限エラーの検出
-        if (typeof data.error === 'string' && 
-          (data.error.includes('rate limit') || 
-          data.error.includes('制限') || 
-          data.error.includes('limit'))) {
-          throw new Error(`API制限エラー: ${data.error} - トークン補充を待つか、バッチサイズを小さくしてください。`);
+      // APIキーが変更された時にローカルストレージに保存
+      React.useEffect(function() {
+        if (saveApiKey && apiKey) {
+          localStorage.setItem('keepaApiKey', apiKey);
+        } else if (!saveApiKey) {
+          localStorage.removeItem('keepaApiKey');
+        }
+      }, [apiKey, saveApiKey]);
+
+      // 通知を表示するための効果
+      React.useEffect(function() {
+        if (notification) {
+          const timer = setTimeout(function() {
+            setNotification(null);
+          }, 5000);
+          return function() { clearTimeout(timer); };
+        }
+      }, [notification]);
+
+      // Parse pasted spreadsheet data - 改良版
+      const parseData = function(data) {
+        // 空白行の除去と正規化
+        const cleanedData = data.trim().replace(/\r\n/g, '\n');
+        const lines = cleanedData.split('\n');
+        
+        if (lines.length === 0) {
+          throw new Error('データが見つかりません。有効なデータを貼り付けてください。');
         }
         
-        // トークン不足エラーの検出
-        if (typeof data.error === 'string' && 
-          (data.error.includes('token') || 
-          data.error.includes('トークン'))) {
-          throw new Error(`トークン不足エラー: ${data.error} - Keepaアカウントのトークン残高を確認してください。`);
+        // 各行を解析
+        let skippedCount = 0;
+        const validRows = [];
+        
+        // ヘッダー行があるかチェック
+        const firstLine = lines[0].trim();
+        const hasHeader = !/B0[0-9A-Z]{8}/i.test(firstLine);
+        const startIndex = hasHeader ? 1 : 0;
+        
+        console.log('ヘッダー行検出:', hasHeader ? 'あり' : 'なし');
+        
+        for (let i = startIndex; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) {
+            skippedCount++;
+            continue;
+          }
+          
+          // ASINを検出（B0で始まる10文字）
+          const asinMatch = line.match(/B0[0-9A-Z]{8}/i);
+          if (!asinMatch) {
+            console.log('ASINが見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
+          
+          const asin = asinMatch[0].toUpperCase();
+          
+          // ASINを除去して価格を探す
+          // 様々な価格形式に対応
+          let priceText = line.replace(asin, '').trim();
+          // カンマやピリオドを含む価格パターンを検出
+          let priceMatch = priceText.match(/[\d,]+(\.\d+)?/);
+          if (!priceMatch) {
+            console.log('有効な価格が見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
+          
+          // 価格をきれいにする
+          let cleanPrice = priceMatch[0].replace(/,/g, '');
+          let priceNumber = parseFloat(cleanPrice);
+          
+          // 小数点以下がある場合は最小通貨単位（例: 円、セント）に変換
+          if (cleanPrice.includes('.')) {
+            // 小数点があれば通貨単位に変換（例: $10.99 → 1099 セント）
+            priceNumber = Math.round(priceNumber * 100);
+          } else {
+            // 小数点がなければ整数として解析
+            priceNumber = parseInt(cleanPrice, 10);
+          }
+          
+          if (isNaN(priceNumber) || priceNumber <= 0) {
+            console.log('有効な価格が見つかりません:', line);
+            skippedCount++;
+            continue;
+          }
+          
+          validRows.push({
+            lineNumber: i + 1,
+            asin,
+            price: priceNumber
+          });
+          
+          console.log(`解析結果: ASIN=${asin}, 価格=${priceNumber}`);
         }
         
-        // その他のエラー
-        throw new Error(`Keepa API エラー: ${data.error}`);
-      }
-      
-      // Process successful responses
-      if (data.trackings && Array.isArray(data.trackings)) {
-        results.push(...data.trackings.map(function(tracking) {
+        setSkippedRows(skippedCount);
+        setValidProducts(validRows.length);
+        
+        if (validRows.length === 0) {
+          throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
+        }
+        
+        return validRows;
+      };
+
+      // Generate tracking creation objects - 改良版
+      const generateTrackingObjects = function(parsedData) {
+        return parsedData.map(function(item) {
+          // Create threshold values based on selected tracking options
+          const thresholdValues = [];
+          
+          if (trackingOptions.amazon) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: parseInt(selectedDomain),
+              csvType: 0, // AMAZON
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.new) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: parseInt(selectedDomain),
+              csvType: 1, // NEW
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.used) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: parseInt(selectedDomain),
+              csvType: 2, // USED
+              isDrop: true
+            });
+          }
+          
+          if (trackingOptions.buyBox) {
+            thresholdValues.push({
+              thresholdValue: item.price,
+              domain: parseInt(selectedDomain),
+              csvType: 18, // BUY_BOX_SHIPPING
+              isDrop: true
+            });
+          }
+          
           return {
-            asin: tracking.asin,
-            success: true,
-            message: '登録成功',
-            details: tracking
+            asin: item.asin,
+            ttl: parseInt(ttl), // ユーザー設定可能な時間
+            expireNotify: true,
+            desiredPricesInMainCurrency: true,
+            mainDomainId: parseInt(selectedDomain), // ユーザー設定可能なドメイン
+            updateInterval: parseInt(updateInterval), // ユーザー設定可能な更新間隔
+            thresholdValues,
+            notificationType: [false, false, false, false, false, true, false] // API notifications only
           };
-        }));
-        
-        // 各バッチ完了時に通知
-        setNotification({
-          type: 'info',
-          message: `バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} が完了しました（${batch.length}件）`
         });
-        
-        // 短い遅延を挿入して、APIレート制限を回避
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } else {
-        // If no trackings array is returned, something is wrong
-        const errorMsg = `Keepa APIから予期しないレスポンス形式: ${JSON.stringify(data).substring(0, 100)}...`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
-      }
-    } catch (error) {
-      console.error('API呼び出しエラー:', error);
-      
-      // Handle API errors
-      batch.forEach(function(obj) {
-        results.push({
-          asin: obj.asin,
-          success: false,
-          message: error.message || 'API呼び出し中にエラーが発生しました'
-        });
-      });
-      
-      // API制限エラーの場合は処理を中断
-      if (error.message && (
-          error.message.includes('API制限エラー') || 
-          error.message.includes('トークン不足エラー'))) {
-        setNotification({
-          type: 'error',
-          message: error.message
-        });
-        break; // 処理を中断
-      }
-    }
-  }
-  
-  // 最終進捗を100%に設定
-  setProgress(100);
-  
-  return results;
-};
+      };
 
-// Handle form submission
-const handleSubmit = async function(e) {
-  e.preventDefault();
-  setLoading(true);
-  setError('');
-  setSuccess('');
-  setResults([]);
-  setValidProducts(0);
-  setSkippedRows(0);
-  setProgress(0);
-  
-  try {
-    // Parse the pasted data
-    const parsedData = parseData(pastedData);
-    
-    if (parsedData.length === 0) {
-      throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
-    }
-    
-    // Check if any tracking options are selected
-    if (!trackingOptions.buyBox && !trackingOptions.amazon && !trackingOptions.new && !trackingOptions.used) {
-      throw new Error('トラッキングする価格条件を少なくとも一つ選択してください。');
-    }
-    
-    // Generate tracking objects
-    const trackingObjects = generateTrackingObjects(parsedData);
-    
-    // デバッグ情報を表示
-    console.log('処理対象商品数:', parsedData.length);
-    console.log('生成されたトラッキングオブジェクト例:', JSON.stringify(trackingObjects[0], null, 2));
-    console.log('バッチサイズ:', batchSize);
-    
-    // Submit to Keepa API
-    setNotification({
-      type: 'info',
-      message: `${parsedData.length}件の商品を登録開始します（バッチサイズ: ${batchSize}）`
-    });
-    
-    const apiResults = await submitTracking(trackingObjects);
-    
-    // Update state with results
-    setResults(apiResults);
-    
-    // Calculate success rate
-    const successCount = apiResults.filter(function(r) { return r.success; }).length;
-    setSuccess(`${successCount}/${apiResults.length} 商品のトラッキングが正常に登録されました。`);
-    
-    // 完了通知
-    setNotification({
-      type: 'success',
-      message: `登録完了！ ${successCount}/${apiResults.length} 商品が正常に登録されました`
-    });
-    
-    if (successCount === 0) {
-      setError('登録に成功した商品がありません。APIキーが正しいか、またはKeepaアカウントのトークン残高を確認してください。');
-    }
-  } catch (err) {
-    console.error('フォーム送信エラー:', err);
-    setError(err.message);
-    
-    setNotification({
-      type: 'error',
-      message: `エラーが発生しました: ${err.message}`
-    });
-  } finally {
-    setLoading(false);
-  }
-};
-
-// Handle paste from clipboard
-const handlePaste = function(e) {
-  setPastedData(e.target.value);
-  
-  try {
-    // データの予備検証を行う
-    const data = e.target.value;
-    const lines = data.trim().split('\n');
-    
-    if (lines.length > 0) {
-      // ASIN検出を試みる
-      let asinCount = 0;
-      
-      for (let i = 0; i < Math.min(5, lines.length); i++) {
-        if (/B0[0-9A-Z]{8}/i.test(lines[i])) {
-          asinCount++;
+      // Submit tracking to Keepa API - 改良版
+      const submitTracking = async function(trackingObjects) {
+        if (!apiKey) {
+          throw new Error('Keepa APIキーを入力してください。');
         }
-      }
-      
-      console.log(`予備検証: ${lines.length}行中、少なくとも${asinCount}行にASINを検出`);
-    }
-  } catch (err) {
-    console.error('データ予備検証エラー:', err);
-  }
-};
+        
+        // APIエンドポイントを決定
+        let apiEndpoint;
+        if (directApiAccess) {
+          // 直接APIアクセス
+          apiEndpoint = `https://api.keepa.com/tracking`;
+        } else if (proxyUrl) {
+          // カスタムプロキシを使用
+          apiEndpoint = proxyUrl;
+        } else {
+          // CORS対策のためのフォールバック
+          throw new Error('CORS制限のため、直接APIアクセスかカスタムプロキシURLを設定してください。');
+        }
+        
+        // Process in smaller batches
+        const results = [];
+        
+        // Calculate total batches for progress tracking
+        const totalBatchCount = Math.ceil(trackingObjects.length / batchSize);
+        setTotalBatches(totalBatchCount);
+        setCurrentBatch(0);
+        setProgress(0);
+        
+        for (let i = 0; i < trackingObjects.length; i += batchSize) {
+          const batch = trackingObjects.slice(i, i + batchSize);
+          setCurrentBatch(Math.floor(i / batchSize) + 1);
+          setProgress(Math.round((i / trackingObjects.length) * 100));
+          
+          try {
+            // Show detailed request data for debugging
+            console.log(`バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} 処理中...`);
+            console.log('リクエスト先URL:', apiEndpoint);
+            console.log('リクエストデータ:', JSON.stringify(batch, null, 2));
+            
+            // Make the API call to Keepa
+            const response = await fetch(apiEndpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                key: apiKey,
+                type: 'add',
+                tracking: batch
+              }),
+            });
+            
+            if (!response.ok) {
+              throw new Error(`HTTP エラー: ${response.status} ${response.statusText}`);
+            }
+            
+            const responseText = await response.text();
+            let data;
+            
+            try {
+              data = JSON.parse(responseText);
+              console.log('APIレスポンス:', data);
+            } catch (e) {
+              console.error('JSONパース失敗:', responseText);
+              throw new Error(`APIレスポンスの解析に失敗しました: ${responseText.substring(0, 100)}...`);
+            }
+            
+            // Check for API errors
+            if (data.error) {
+              // APIレート制限エラーの検出
+              if (typeof data.error === 'string' && 
+                (data.error.includes('rate limit') || 
+                data.error.includes('制限') || 
+                data.error.includes('limit'))) {
+                throw new Error(`API制限エラー: ${data.error} - トークン補充を待つか、バッチサイズを小さくしてください。`);
+              }
+              
+              // トークン不足エラーの検出
+              if (typeof data.error === 'string' && 
+                (data.error.includes('token') || 
+                data.error.includes('トークン'))) {
+                throw new Error(`トークン不足エラー: ${data.error} - Keepaアカウントのトークン残高を確認してください。`);
+              }
+              
+              // その他のエラー
+              throw new Error(`Keepa API エラー: ${data.error}`);
+            }
+            
+            // Process successful responses
+            if (data.trackings && Array.isArray(data.trackings)) {
+              results.push(...data.trackings.map(function(tracking) {
+                return {
+                  asin: tracking.asin,
+                  success: true,
+                  message: '登録成功',
+                  details: tracking
+                };
+              }));
+              
+              // 各バッチ完了時に通知
+              setNotification({
+                type: 'info',
+                message: `バッチ ${Math.floor(i / batchSize) + 1}/${totalBatchCount} が完了しました（${batch.length}件）`
+              });
+              
+              // 短い遅延を挿入して、APIレート制限を回避
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } else {
+              // If no trackings array is returned, something is wrong
+              const errorMsg = `Keepa APIから予期しないレスポンス形式: ${JSON.stringify(data).substring(0, 100)}...`;
+              console.error(errorMsg);
+              throw new Error(errorMsg);
+            }
+          } catch (error) {
+            console.error('API呼び出しエラー:', error);
+            
+            // Handle API errors
+            batch.forEach(function(obj) {
+              results.push({
+                asin: obj.asin,
+                success: false,
+                message: error.message || 'API呼び出し中にエラーが発生しました'
+              });
+            });
+            
+            // API制限エラーの場合は処理を中断
+            if (error.message && (
+                error.message.includes('API制限エラー') || 
+                error.message.includes('トークン不足エラー'))) {
+              setNotification({
+                type: 'error',
+                message: error.message
+              });
+              break; // 処理を中断
+            }
+          }
+        }
+        
+        // 最終進捗を100%に設定
+        setProgress(100);
+        
+        return results;
+      };
 
-// サンプルデータを挿入
-const insertSampleData = function() {
-  const sampleData = `B09GFPTN45 3,980
+      // Handle form submission
+      const handleSubmit = async function(e) {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        setSuccess('');
+        setResults([]);
+        setValidProducts(0);
+        setSkippedRows(0);
+        setProgress(0);
+        
+        try {
+          // Parse the pasted data
+          const parsedData = parseData(pastedData);
+          
+          if (parsedData.length === 0) {
+            throw new Error('有効な商品データが見つかりませんでした。ASINと価格が正しく入力されているか確認してください。');
+          }
+          
+          // Check if any tracking options are selected
+          if (!trackingOptions.buyBox && !trackingOptions.amazon && !trackingOptions.new && !trackingOptions.used) {
+            throw new Error('トラッキングする価格条件を少なくとも一つ選択してください。');
+          }
+          
+          // Generate tracking objects
+          const trackingObjects = generateTrackingObjects(parsedData);
+          
+          // デバッグ情報を表示
+          console.log('処理対象商品数:', parsedData.length);
+          console.log('生成されたトラッキングオブジェクト例:', JSON.stringify(trackingObjects[0], null, 2));
+          console.log('バッチサイズ:', batchSize);
+          
+          // Submit to Keepa API
+          setNotification({
+            type: 'info',
+            message: `${parsedData.length}件の商品を登録開始します（バッチサイズ: ${batchSize}）`
+          });
+          
+          const apiResults = await submitTracking(trackingObjects);
+          
+          // Update state with results
+          setResults(apiResults);
+          
+          // Calculate success rate
+          const successCount = apiResults.filter(function(r) { return r.success; }).length;
+          setSuccess(`${successCount}/${apiResults.length} 商品のトラッキングが正常に登録されました。`);
+          
+          // 完了通知
+          setNotification({
+            type: 'success',
+            message: `登録完了！ ${successCount}/${apiResults.length} 商品が正常に登録されました`
+          });
+          
+          if (successCount === 0) {
+            setError('登録に成功した商品がありません。APIキーが正しいか、またはKeepaアカウントのトークン残高を確認してください。');
+          }
+        } catch (err) {
+          console.error('フォーム送信エラー:', err);
+          setError(err.message);
+          
+          setNotification({
+            type: 'error',
+            message: `エラーが発生しました: ${err.message}`
+          });
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // Handle paste from clipboard
+      const handlePaste = function(e) {
+        setPastedData(e.target.value);
+        
+        try {
+          // データの予備検証を行う
+          const data = e.target.value;
+          const lines = data.trim().split('\n');
+          
+          if (lines.length > 0) {
+            // ASIN検出を試みる
+            let asinCount = 0;
+            
+            for (let i = 0; i < Math.min(5, lines.length); i++) {
+              if (/B0[0-9A-Z]{8}/i.test(lines[i])) {
+                asinCount++;
+              }
+            }
+            
+            console.log(`予備検証: ${lines.length}行中、少なくとも${asinCount}行にASINを検出`);
+          }
+        } catch (err) {
+          console.error('データ予備検証エラー:', err);
+        }
+      };
+
+      // サンプルデータを挿入
+      const insertSampleData = function() {
+        const sampleData = `B09GFPTN45 3,980
 B07NWSLSXM 11,067
 B08D11DZ37 2,500`;
-  setPastedData(sampleData);
-};
+        setPastedData(sampleData);
+      };
 
-// UI表示部分
-return React.createElement(
-  "div",
-  { className: "max-w-6xl mx-auto p-4" },
-  // ヘッダー部分
-  React.createElement(
-    "div",
-    { className: "mb-8" },
-    React.createElement(
-      "h1",
-      { className: "text-2xl font-bold text-gray-800 mb-2" },
-      "L-Track"
-    ),
-    React.createElement(
-      "p",
-      { className: "text-gray-600" },
-      "ASINと価格をコピーして、Keepaのトラッキングを一括登録できます。"
-    )
-  ),
-  
-  // 通知表示部分
-  notification && React.createElement(
-    "div",
-    { 
-      className: `fixed top-4 right-4 p-4 rounded-md shadow-lg max-w-md z-50 ${
-        notification.type === 'success' ? 'bg-green-100 text-green-800' : 
-        notification.type === 'error' ? 'bg-red-100 text-red-800' : 
-        'bg-blue-100 text-blue-800'
-      }`
-    },
-    React.createElement(
-      "div",
-      { className: "flex items-start" },
-      notification.type === 'success' && React.createElement(Icon, { name: "check-circle", className: "text-green-500 mr-2 flex-shrink-0" }),
-      notification.type === 'error' && React.createElement(Icon, { name: "alert-circle", className: "text-red-500 mr-2 flex-shrink-0" }),
-      notification.type === 'info' && React.createElement(Icon, { name: "info", className: "text-blue-500 mr-2 flex-shrink-0" }),
-      React.createElement(
+      // UI表示部分
+      return React.createElement(
         "div",
-        { className: "flex-grow" },
-        React.createElement("p", { className: "font-medium" }, notification.message)
-      ),
-      React.createElement(
-        "button",
-        { 
-          onClick: function() { setNotification(null); },
-          className: "ml-auto -mr-1 -mt-1 p-1 text-gray-500 hover:text-gray-700 focus:outline-none flex-shrink-0"
-        },
-        React.createElement(Icon, { name: "x" })
-      )
-    )
-  ),
-  
-  // 使い方ガイド部分
-  React.createElement(
-    "div",
-    { className: "bg-blue-50 p-4 rounded-lg mb-8" },
-    React.createElement(
-      "div",
-      { className: "flex gap-2" },
-      React.createElement(Icon, { name: "info", className: "text-blue-500 flex-shrink-0 mt-1" }),
-      React.createElement(
-        "div",
-        null,
-        React.createElement("h3", { className: "text-blue-700 font-medium" }, "使い方"),
-        React.createElement(
-          "ol",
-          { className: "list-decimal ml-5 text-blue-700 text-sm mt-2" },
-          React.createElement("li", null, "スプレッドシートからASINと基準価格の2列をコピー"),
-          React.createElement("li", null, "下のテキストエリアにペースト"),
-          React.createElement("li", null, "KeepaのAPIキーを入力"),
-          React.createElement("li", null, "トラッキングしたい価格の種類を選択"),
-          React.createElement("li", null, "「トラッキング登録」ボタンをクリック")
-        )
-      )
-    )
-  ),
-
-// フォーム部分
-React.createElement(
-  "form",
-  { onSubmit: handleSubmit },
-  // APIキーとAmazon地域設定
-  React.createElement(
-    "div",
-    { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-6" },
-    React.createElement(
-      "div",
-      null,
-      React.createElement(
-        "label",
-        { htmlFor: "apiKey", className: "block text-sm font-medium text-gray-700 mb-1" },
-        "Keepa APIキー"
-      ),
-      React.createElement(
-        "div",
-        { className: "relative" },
-        React.createElement("input", {
-          type: "text",
-          id: "apiKey",
-          value: apiKey,
-          onChange: function(e) { setApiKey(e.target.value); },
-          className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500",
-          placeholder: "APIキーを入力してください",
-          required: true
-        })
-      ),
-      React.createElement(
-        "div",
-        { className: "mt-2 flex items-center" },
-        React.createElement("input", {
-          type: "checkbox",
-          id: "saveApiKey",
-          checked: saveApiKey,
-          onChange: function(e) { setSaveApiKey(e.target.checked); },
-          className: "h-4 w-4 text-blue-600 focus:ring-blue-500 mr-2"
-        }),
-        React.createElement(
-          "label",
-          { htmlFor: "saveApiKey", className: "text-sm text-gray-600" },
-          "APIキーをブラウザに保存する"
-        )
-      )
-    ),
-    
-    // Amazonドメイン選択
-    React.createElement(
-      "div",
-      null,
-      React.createElement(
-        "label",
-        { htmlFor: "amazonDomain", className: "block text-sm font-medium text-gray-700 mb-1" },
-        "Amazonの地域"
-      ),
-      React.createElement(
-        "select",
-        {
-          id: "amazonDomain",
-          value: selectedDomain,
-          onChange: function(e) { setSelectedDomain(e.target.value); },
-          className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-        },
-        amazonDomains.map(function(domain) {
-          return React.createElement(
-            "option",
-            { key: domain.id, value: domain.id },
-            domain.label
-          );
-        })
-      )
-    )
-  ),
-  
-  // データ入力エリア
-  React.createElement(
-    "div",
-    { className: "mb-6" },
-    // ヘッダー
-    React.createElement(
-      "div",
-      { className: "flex justify-between items-center mb-1" },
-      React.createElement(
-        "label",
-        { htmlFor: "pastedData", className: "block text-sm font-medium text-gray-700" },
-        "スプレッドシートデータ"
-      ),
-      React.createElement(
-        "div",
-        { className: "flex space-x-2" },
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            onClick: insertSampleData,
-            className: "text-sm text-blue-600 hover:text-blue-800 flex items-center"
-          },
-          React.createElement(Icon, { name: "copy", className: "mr-1" }),
-          React.createElement("span", null, "サンプルデータ挿入")
-        ),
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            onClick: function() { setShowSettings(!showSettings); },
-            className: "text-sm text-blue-600 hover:text-blue-800 flex items-center"
-          },
-          React.createElement(Icon, { name: "settings", className: "mr-1" }),
-          React.createElement("span", null, "詳細設定")
-        )
-      )
-    ),
-    
-    // 詳細設定部分
-    showSettings && React.createElement(
-      "div",
-      { className: "mb-4 p-4 bg-gray-50 rounded-md" },
-      // バッチサイズと期間設定
-      React.createElement(
-        "div",
-        { className: "grid grid-cols-1 md:grid-cols-2 gap-4 mb-4" },
-        // バッチサイズ設定
+        { className: "max-w-6xl mx-auto p-4" },
         React.createElement(
           "div",
-          null,
+          { className: "mb-8" },
           React.createElement(
-            "label",
-            { htmlFor: "batchSize", className: "block text-sm font-medium text-gray-700 mb-1" },
-            "バッチサイズ（一度に処理する商品数）"
+            "h1",
+            { className: "text-2xl font-bold text-gray-800 mb-2" },
+            "L-Track"
           ),
           React.createElement(
+            "p",
+            { className: "text-gray-600" },
+            "ASINと価格をコピーして、Keepaのトラッキングを一括登録できます。"
+          )
+        ),
+        
+        notification && React.createElement(
+          "div",
+          { 
+            className: `fixed top-4 right-4 p-4 rounded-md shadow-lg max-w-md z-50 ${
+              notification.type === 'success' ? 'bg-green-100 text-green-800' : 
+              notification.type === 'error' ? 'bg-red-100 text-red-800' : 
+              'bg-blue-100 text-blue-800'
+            }`
+          },
+          React.createElement(
             "div",
-            { className: "flex items-center" },
-            React.createElement("input", {
-              type: "range",
-              id: "batchSize",
-              min: "1",
-              max: "50",
-              value: batchSize,
-              onChange: function(e) { setBatchSize(parseInt(e.target.value)); },
-              className: "w-full mr-3"
-            }),
+            { className: "flex items-start" },
+            notification.type === 'success' && React.createElement(Icon, { name: "check-circle", className: "text-green-500 mr-2 flex-shrink-0" }),
+            notification.type === 'error' && React.createElement(Icon, { name: "alert-circle", className: "text-red-500 mr-2 flex-shrink-0" }),
+            notification.type === 'info' && React.createElement(Icon, { name: "info", className: "text-blue-500 mr-2 flex-shrink-0" }),
             React.createElement(
               "div",
-              { className: "flex items-center" },
-              React.createElement("input", {
-                type: "number",
-                value: batchSize,
-                onChange: function(e) { setBatchSize(parseInt(e.target.value) || 1); },
-                min: "1",
-                max: "50",
-                className: "w-16 px-2 py-1 border border-gray-300 rounded-md text-center"
-              }),
-              React.createElement("span", { className: "ml-2 text-gray-600 text-sm" }, "件")
-            )
-          ),
-          React.createElement("p", { className: "text-xs text-gray-500 mt-1" },
-            "APIの制限に問題がある場合は、小さい値に設定してください。推奨: 1〜10"
-          )
-        ),
-        
-        // トラッキング期間設定
-        React.createElement(
-          "div",
-          null,
-          React.createElement(
-            "label",
-            { htmlFor: "ttl", className: "block text-sm font-medium text-gray-700 mb-1" },
-            "トラッキング期間"
-          ),
-          React.createElement(
-            "div",
-            { className: "flex items-center" },
-            React.createElement(
-              "select",
-              {
-                id: "ttl",
-                value: ttl,
-                onChange: function(e) { setTtl(parseInt(e.target.value)); },
-                className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              },
-              React.createElement("option", { value: "720" }, "1ヶ月（30日）"),
-              React.createElement("option", { value: "2160" }, "3ヶ月（90日）"),
-              React.createElement("option", { value: "4320" }, "6ヶ月（180日）"),
-              React.createElement("option", { value: "8760" }, "12ヶ月（365日）"),
-              React.createElement("option", { value: "0" }, "無期限")
-            )
-          )
-        )
-      ),
-      
-      // 更新間隔とCORS設定
-      React.createElement(
-        "div",
-        { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
-        // 更新間隔設定
-        React.createElement(
-          "div",
-          null,
-          React.createElement(
-            "label",
-            { htmlFor: "updateInterval", className: "block text-sm font-medium text-gray-700 mb-1" },
-            "更新間隔"
-          ),
-          React.createElement(
-            "select",
-            {
-              id: "updateInterval",
-              value: updateInterval,
-              onChange: function(e) { setUpdateInterval(parseInt(e.target.value)); },
-              className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            },
-            React.createElement("option", { value: "1" }, "1時間"),
-            React.createElement("option", { value: "2" }, "2時間"),
-            React.createElement("option", { value: "3" }, "3時間"),
-            React.createElement("option", { value: "6" }, "6時間"),
-            React.createElement("option", { value: "12" }, "12時間"),
-            React.createElement("option", { value: "24" }, "24時間")
-          )
-        ),
-        
-        // CORS対策設定
-        React.createElement(
-          "div",
-          null,
-          React.createElement(
-            "label",
-            { className: "block text-sm font-medium text-gray-700 mb-1" },
-            "CORS対策"
-          ),
-          React.createElement(
-            "div",
-            { className: "space-y-2" },
-            React.createElement(
-              "label",
-              { className: "inline-flex items-center gap-2" },
-              React.createElement("input", {
-                type: "checkbox",
-                checked: directApiAccess,
-                onChange: function(e) { setDirectApiAccess(e.target.checked); },
-                className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
-              }),
-              React.createElement("span", { className: "text-sm" }, "直接APIアクセス（CORSプラグイン必須）")
+              { className: "flex-grow" },
+              React.createElement("p", { className: "font-medium" }, notification.message)
             ),
+            React.createElement(
+              "button",
+              { 
+                onClick: function() { setNotification(null); },
+                className: "ml-auto -mr-1 -mt-1 p-1 text-gray-500 hover:text-gray-700 focus:outline-none flex-shrink-0"
+              },
+              React.createElement(Icon, { name: "x" })
+            )
+          )
+        ),
+        
+        React.createElement(
+          "div",
+          { className: "bg-blue-50 p-4 rounded-lg mb-8" },
+          React.createElement(
+            "div",
+            { className: "flex gap-2" },
+            React.createElement(Icon, { name: "info", className: "text-blue-500 flex-shrink-0 mt-1" }),
             React.createElement(
               "div",
               null,
-              React.createElement("input", {
-                type: "text",
-                value: proxyUrl,
-                onChange: function(e) { setProxyUrl(e.target.value); },
+              React.createElement("h3", { className: "text-blue-700 font-medium" }, "使い方"),
+              React.createElement(
+                "ol",
+                { className: "list-decimal ml-5 text-blue-700 text-sm mt-2" },
+                React.createElement("li", null, "スプレッドシートからASINと基準価格の2列をコピー"),
+                React.createElement("li", null, "下のテキストエリアにペースト"),
+                React.createElement("li", null, "KeepaのAPIキーを入力"),
+                React.createElement("li", null, "トラッキングしたい価格の種類を選択"),
+                React.createElement("li", null, "「トラッキング登録」ボタンをクリック")
+              )
+            )
+          )
+        ),
+        
+        React.createElement(
+          "form",
+          { onSubmit: handleSubmit },
+          React.createElement(
+            "div",
+            { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-6" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "label",
+                { htmlFor: "apiKey", className: "block text-sm font-medium text-gray-700 mb-1" },
+                "Keepa APIキー"
+              ),
+              React.createElement(
+                "div",
+                { className: "relative" },
+                React.createElement("input", {
+                  type: "text",
+                  id: "apiKey",
+                  value: apiKey,
+                  onChange: function(e) { setApiKey(e.target.value); },
+                  className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500",
+                  placeholder: "APIキーを入力してください",
+                  required: true
+                })
+              ),
+              React.createElement(
+                "div",
+                { className: "mt-2 flex items-center" },
+                React.createElement("input", {
+                  type: "checkbox",
+                  id: "saveApiKey",
+                  checked: saveApiKey,
+                  onChange: function(e) { setSaveApiKey(e.target.checked); },
+                  className: "h-4 w-4 text-blue-600 focus:ring-blue-500 mr-2"
+                }),
+                React.createElement(
+                  "label",
+                  { htmlFor: "saveApiKey", className: "text-sm text-gray-600" },
+                  "APIキーをブラウザに保存する"
+                )
+              )
+            ),
+            
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "label",
+                { htmlFor: "amazonDomain", className: "block text-sm font-medium text-gray-700 mb-1" },
+                "Amazonの地域"
+              ),
+              React.createElement(
+                "select",
+                {
+                  id: "amazonDomain",
+                  value: selectedDomain,
+                  onChange: function(e) { setSelectedDomain(e.target.value); },
+                  className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                },
+                amazonDomains.map(function(domain) {
+                  return React.createElement(
+                    "option",
+                    { key: domain.id, value: domain.id },
+                    domain.label
+                  );
+                })
+              )
+            )
+          ),
+          
+          React.createElement(
+            "div",
+            { className: "mb-6" },
+            React.createElement(
+              "div",
+              { className: "flex justify-between items-center mb-1" },
+              React.createElement(
+                "label",
+                { htmlFor: "pastedData", className: "block text-sm font-medium text-gray-700" },
+                "スプレッドシートデータ"
+              ),
+              React.createElement(
+                "div",
+                { className: "flex space-x-2" },
+                React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: insertSampleData,
+                    className: "text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                  },
+                  React.createElement(Icon, { name: "copy", className: "mr-1" }),
+                  React.createElement("span", null, "サンプルデータ挿入")
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: function() { setShowSettings(!showSettings); },
+                    className: "text-sm text-blue-600 hover:text-blue-800 flex items-center"
+                  },
+                  React.createElement(Icon, { name: "settings", className: "mr-1" }),
+                  React.createElement("span", null, "詳細設定")
+                )
+              )
+            ),
+            
+            showSettings && React.createElement(
+              "div",
+              { className: "mb-4 p-4 bg-gray-50 rounded-md" },
+              React.createElement(
+                "div",
+                { className: "grid grid-cols-1 md:grid-cols-2 gap-4 mb-4" },
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement(
+                    "label",
+                    { htmlFor: "batchSize", className: "block text-sm font-medium text-gray-700 mb-1" },
+                    "バッチサイズ（一度に処理する商品数）"
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex items-center" },
+                    React.createElement("input", {
+                      type: "range",
+                      id: "batchSize",
+                      min: "1",
+                      max: "50",
+                      value: batchSize,
+                      onChange: function(e) { setBatchSize(parseInt(e.target.value)); },
+                      className: "w-full mr-3"
+                    }),
+                    React.createElement(
+                      "div",
+                      { className: "flex items-center" },
+                      React.createElement("input", {
+                        type: "number",
+                        value: batchSize,
+                        onChange: function(e) { setBatchSize(parseInt(e.target.value) || 1); },
+                        min: "1",
+                        max: "50",
+                        className: "w-16 px-2 py-1 border border-gray-300 rounded-md text-center"
+                      }),
+                      React.createElement("span", { className: "ml-2 text-gray-600 text-sm" }, "件")
+                    )
+                  ),
+                  React.createElement("p", { className: "text-xs text-gray-500 mt-1" },
+                    "APIの制限に問題がある場合は、小さい値に設定してください。推奨: 1〜10"
+                  )
+                ),
+                
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement(
+                    "label",
+                    { htmlFor: "ttl", className: "block text-sm font-medium text-gray-700 mb-1" },
+                    "トラッキング期間"
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex items-center" },
+                    React.createElement(
+                      "select",
+                      {
+                        id: "ttl",
+                        value: ttl,
+                        onChange: function(e) { setTtl(parseInt(e.target.value)); },
+                        className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      },
+                      React.createElement("option", { value: "720" }, "1ヶ月（30日）"),
+                      React.createElement("option", { value: "2160" }, "3ヶ月（90日）"),
+                      React.createElement("option", { value: "4320" }, "6ヶ月（180日）"),
+                      React.createElement("option", { value: "8760" }, "12ヶ月（365日）"),
+                      React.createElement("option", { value: "0" }, "無期限")
+                    )
+                  )
+                )
+              ),
+              
+              React.createElement(
+                "div",
+                { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement(
+                    "label",
+                    { htmlFor: "updateInterval", className: "block text-sm font-medium text-gray-700 mb-1" },
+                    "更新間隔"
+                  ),
+                  React.createElement(
+                    "select",
+                    {
+                      id: "updateInterval",
+                      value: updateInterval,
+                      onChange: function(e) { setUpdateInterval(parseInt(e.target.value)); },
+                      className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    },
+                    React.createElement("option", { value: "1" }, "1時間"),
+                    React.createElement("option", { value: "2" }, "2時間"),
+                    React.createElement("option", { value: "3" }, "3時間"),
+                    React.createElement("option", { value: "6" }, "6時間"),
+                    React.createElement("option", { value: "12" }, "12時間"),
+                    React.createElement("option", { value: "24" }, "24時間")
+                  )
+                ),
+                
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement(
+                    "label",
+                    { className: "block text-sm font-medium text-gray-700 mb-1" },
+                    "CORS対策"
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "space-y-2" },
+                    React.createElement(
+                      "label",
+                      { className: "inline-flex items-center gap-2" },
+                      React.createElement("input", {
+                        type: "checkbox",
+                        checked: directApiAccess,
+                        onChange: function(e) { setDirectApiAccess(e.target.checked); },
+                        className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
+                      }),
+                      React.createElement("span", { className: "text-sm" }, "直接APIアクセス（CORSプラグイン必須）")
+                    ),
+                    React.createElement(
+                      "div",
+                      null,
+                      React.createElement("input", {
+                        type: "text",
+                        value: proxyUrl,
+                        onChange: function(e) { setProxyUrl(e.target.value); },
+                        className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500",
+                        placeholder: "カスタムプロキシURL（オプション）",
+                        disabled: directApiAccess
+                      })
+                    )
+                  )
+                )
+              )
+            ),
+            
+            React.createElement(
+              "div",
+              { className: "relative" },
+              React.createElement("textarea", {
+                id: "pastedData",
+                value: pastedData,
+                onChange: handlePaste,
+                rows: 10,
                 className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500",
-                placeholder: "カスタムプロキシURL（オプション）",
-                disabled: directApiAccess
+                placeholder: "ASINと価格を貼り付けてください。例:\nB087F3CCG5 9,927\nB07NWSLSXM 11,067",
+                required: true
+              }),
+              React.createElement(
+                "div",
+                { className: "absolute top-2 right-2 flex space-x-2" },
+                React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "text-gray-400 hover:text-gray-600",
+                    onClick: function() { setPastedData(''); },
+                    title: "クリア"
+                  },
+                  React.createElement(Icon, { name: "trash-2" })
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "text-gray-400 hover:text-gray-600",
+                    onClick: function() {
+                      navigator.clipboard.readText().then(function(text) {
+                        setPastedData(text);
+                      }).catch(function(err) {
+                        setError('クリップボードの読み取りに失敗しました。手動でペーストしてください。');
+                      });
+                    },
+                    title: "クリップボードから貼り付け"
+                  },
+                  React.createElement(Icon, { name: "clipboard" })
+                )
+              )
+            ),
+            
+            validProducts > 0 && React.createElement(
+              "div",
+              { className: "mt-2 text-sm text-gray-600" },
+              React.createElement("span", { className: "font-medium text-green-600" }, validProducts + "件"),
+              "の有効な商品データが見つかりました",
+              skippedRows > 0 && React.createElement("span", null, "（" + skippedRows + "行はスキップされました）")
+            )
+          ),
+          
+          React.createElement(
+            "div",
+            { className: "mb-6" },
+            React.createElement("p", { className: "block text-sm font-medium text-gray-700 mb-2" }, "トラッキングオプション"),
+            React.createElement(
+              "div",
+              { className: "flex flex-wrap gap-4" },
+              React.createElement(
+                "label",
+                { className: "inline-flex items-center gap-2" },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: trackingOptions.buyBox,
+                  onChange: function(e) { 
+                    setTrackingOptions(Object.assign({}, trackingOptions, { buyBox: e.target.checked })); 
+                  },
+                  className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
+                }),
+                React.createElement("span", null, "バイボックス")
+              ),
+              React.createElement(
+                "label",
+                { className: "inline-flex items-center gap-2" },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: trackingOptions.amazon,
+                  onChange: function(e) { 
+                    setTrackingOptions(Object.assign({}, trackingOptions, { amazon: e.target.checked })); 
+                  },
+                  className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
+                }),
+                React.createElement("span", null, "Amazon")
+              ),
+              React.createElement(
+                "label",
+                { className: "inline-flex items-center gap-2" },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: trackingOptions.new,
+                  onChange: function(e) { 
+                    setTrackingOptions(Object.assign({}, trackingOptions, { new: e.target.checked })); 
+                  },
+                  className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
+                }),
+                React.createElement("span", null, "新品")
+              ),
+              React.createElement(
+                "label",
+                { className: "inline-flex items-center gap-2" },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: trackingOptions.used,
+                  onChange: function(e) { 
+                    setTrackingOptions(Object.assign({}, trackingOptions, { used: e.target.checked })); 
+                  },
+                  className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
+                }),
+                React.createElement("span", null, "中古")
+              )
+            )
+          ),
+          
+          React.createElement(
+            "div",
+            { className: "mb-6" },
+            React.createElement(
+              "button",
+              {
+                type: "submit",
+                className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center",
+                disabled: loading
+              },
+              loading ? [
+                React.createElement(Icon, { key: "icon", name: "loader", className: "animate-spin mr-2" }),
+                React.createElement("span", { key: "text" }, "トラッキング登録中...")
+              ] : [
+                React.createElement(Icon, { key: "icon", name: "upload-cloud", className: "mr-2" }),
+                React.createElement("span", { key: "text" }, "トラッキング登録")
+              ]
+            )
+          ),
+          
+          loading && React.createElement(
+            "div",
+            { className: "mb-6" },
+            React.createElement(
+              "div",
+              { className: "flex items-center justify-between mb-1" },
+              React.createElement(
+                "div",
+                { className: "text-sm font-medium text-gray-700" },
+                "処理中... " + currentBatch + "/" + totalBatches + " バッチ"
+              ),
+              React.createElement(
+                "div",
+                { className: "text-sm text-gray-500" },
+                progress + "%"
+              )
+            ),
+            React.createElement(
+              "div",
+              { className: "w-full bg-gray-200 rounded-full h-2.5" },
+              React.createElement("div", { 
+                className: "bg-blue-600 h-2.5 rounded-full transition-all duration-300",
+                style: { width: progress + "%" }
               })
             )
           )
-        )
-      )
-    ),
-
-// データ入力テキストエリア
-React.createElement(
-  "div",
-  { className: "relative" },
-  React.createElement("textarea", {
-    id: "pastedData",
-    value: pastedData,
-    onChange: handlePaste,
-    rows: 10,
-    className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500",
-    placeholder: "ASINと価格を貼り付けてください。例:\nB087F3CCG5 9,927\nB07NWSLSXM 11,067",
-    required: true
-  }),
-  React.createElement(
-    "div",
-    { className: "absolute top-2 right-2 flex space-x-2" },
-    React.createElement(
-      "button",
-      {
-        type: "button",
-        className: "text-gray-400 hover:text-gray-600",
-        onClick: function() { setPastedData(''); },
-        title: "クリア"
-      },
-      React.createElement(Icon, { name: "trash-2" })
-    ),
-    React.createElement(
-      "button",
-      {
-        type: "button",
-        className: "text-gray-400 hover:text-gray-600",
-        onClick: function() {
-          navigator.clipboard.readText().then(function(text) {
-            setPastedData(text);
-          }).catch(function(err) {
-            setError('クリップボードの読み取りに失敗しました。手動でペーストしてください。');
-          });
-        },
-        title: "クリップボードから貼り付け"
-      },
-      React.createElement(Icon, { name: "clipboard" })
-    )
-  )
-),
-
-// 有効な商品データ情報表示
-validProducts > 0 && React.createElement(
-  "div",
-  { className: "mt-2 text-sm text-gray-600" },
-  React.createElement("span", { className: "font-medium text-green-600" }, validProducts + "件"),
-  "の有効な商品データが見つかりました",
-  skippedRows > 0 && React.createElement("span", null, "（" + skippedRows + "行はスキップされました）")
-)
-),
-
-// トラッキングオプション
-React.createElement(
-  "div",
-  { className: "mb-6" },
-  React.createElement("p", { className: "block text-sm font-medium text-gray-700 mb-2" }, "トラッキングオプション"),
-  React.createElement(
-    "div",
-    { className: "flex flex-wrap gap-4" },
-    // バイボックスオプション
-    React.createElement(
-      "label",
-      { className: "inline-flex items-center gap-2" },
-      React.createElement("input", {
-        type: "checkbox",
-        checked: trackingOptions.buyBox,
-        onChange: function(e) { 
-          setTrackingOptions(Object.assign({}, trackingOptions, { buyBox: e.target.checked })); 
-        },
-        className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
-      }),
-      React.createElement("span", null, "バイボックス")
-    ),
-    // Amazonオプション
-    React.createElement(
-      "label",
-      { className: "inline-flex items-center gap-2" },
-      React.createElement("input", {
-        type: "checkbox",
-        checked: trackingOptions.amazon,
-        onChange: function(e) { 
-          setTrackingOptions(Object.assign({}, trackingOptions, { amazon: e.target.checked })); 
-        },
-        className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
-      }),
-      React.createElement("span", null, "Amazon")
-    ),
-    // 新品オプション
-    React.createElement(
-      "label",
-      { className: "inline-flex items-center gap-2" },
-      React.createElement("input", {
-        type: "checkbox",
-        checked: trackingOptions.new,
-        onChange: function(e) { 
-          setTrackingOptions(Object.assign({}, trackingOptions, { new: e.target.checked })); 
-        },
-        className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
-      }),
-      React.createElement("span", null, "新品")
-    ),
-    // 中古オプション
-    React.createElement(
-      "label",
-      { className: "inline-flex items-center gap-2" },
-      React.createElement("input", {
-        type: "checkbox",
-        checked: trackingOptions.used,
-        onChange: function(e) { 
-          setTrackingOptions(Object.assign({}, trackingOptions, { used: e.target.checked })); 
-        },
-        className: "h-4 w-4 text-blue-600 focus:ring-blue-500"
-      }),
-      React.createElement("span", null, "中古")
-    )
-  )
-),
-
-// 送信ボタン
-React.createElement(
-  "div",
-  { className: "mb-6" },
-  React.createElement(
-    "button",
-    {
-      type: "submit",
-      className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center",
-      disabled: loading
-    },
-    loading ? [
-      React.createElement(Icon, { key: "icon", name: "loader", className: "animate-spin mr-2" }),
-      React.createElement("span", { key: "text" }, "トラッキング登録中...")
-    ] : [
-      React.createElement(Icon, { key: "icon", name: "upload-cloud", className: "mr-2" }),
-      React.createElement("span", { key: "text" }, "トラッキング登録")
-    ]
-  )
-),
-
-// 進捗表示
-loading && React.createElement(
-  "div",
-  { className: "mb-6" },
-  React.createElement(
-    "div",
-    { className: "flex items-center justify-between mb-1" },
-    React.createElement(
-      "div",
-      { className: "text-sm font-medium text-gray-700" },
-      "処理中... " + currentBatch + "/" + totalBatches + " バッチ"
-    ),
-    React.createElement(
-      "div",
-      { className: "text-sm text-gray-500" },
-      progress + "%"
-    )
-  ),
-  React.createElement(
-    "div",
-    { className: "w-full bg-gray-200 rounded-full h-2.5" },
-    React.createElement("div", { 
-      className: "bg-blue-600 h-2.5 rounded-full transition-all duration-300",
-      style: { width: progress + "%" }
-    })
-  )
-)
-
-// エラー表示
-error && React.createElement(
-  "div",
-  { className: "mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded" },
-  React.createElement(
-    "div",
-    { className: "flex" },
-    React.createElement(Icon, { name: "alert-circle", className: "text-red-500 mr-2 flex-shrink-0" }),
-    React.createElement(
-      "div",
-      { className: "text-red-700" },
-      React.createElement("p", { className: "font-medium" }, "エラーが発生しました："),
-      React.createElement("p", null, error),
-      React.createElement(
-        "details",
-        { className: "mt-2" },
-        React.createElement(
-          "summary",
-          { className: "cursor-pointer text-sm text-red-600" },
-          "トラブルシューティング"
         ),
-        // エラー種類ごとの対処法
+
+        error && React.createElement(
+          "div",
+          { className: "mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded" },
+          React.createElement(
+            "div",
+            { className: "flex" },
+            React.createElement(Icon, { name: "alert-circle", className: "text-red-500 mr-2 flex-shrink-0" }),
+            React.createElement(
+              "div",
+              { className: "text-red-700" },
+              React.createElement("p", { className: "font-medium" }, "エラーが発生しました："),
+              React.createElement("p", null, error),
+              React.createElement(
+                "details",
+                { className: "mt-2" },
+                React.createElement(
+                  "summary",
+                  { className: "cursor-pointer text-sm text-red-600" },
+                  "トラブルシューティング"
+                ),
+                React.createElement(
+                  "div",
+                  { className: "mt-2 text-sm space-y-2" },
+                  error.includes('API制限') && React.createElement(
+                    "div",
+                    null,
+                    React.createElement("p", { className: "font-medium" }, "API制限エラー："),
+                    React.createElement(
+                      "ul",
+                      { className: "list-disc ml-5" },
+                      React.createElement("li", null, "バッチサイズを小さくしてください（1-3程度）"),
+                      React.createElement("li", null, "少し時間をおいてから再試行してください"),
+                      React.createElement("li", null, "Keepaアカウントのトークン使用状況を確認してください")
+                    )
+                  ),
+                  
+                  error.includes('トークン') && React.createElement(
+                    "div",
+                    null,
+                    React.createElement("p", { className: "font-medium" }, "トークン不足："),
+                    React.createElement(
+                      "ul",
+                      { className: "list-disc ml-5" },
+                      React.createElement("li", null, "Keepaアカウントのトークン残高を確認してください"),
+                      React.createElement("li", null, "トラッキングによるトークン消費量を確認してください"),
+                      React.createElement("li", null, "より高いAPIプランへのアップグレードを検討してください")
+                    )
+                  ),
+                  
+                  error.includes('CORS') && React.createElement(
+                    "div",
+                    null,
+                    React.createElement("p", { className: "font-medium" }, "CORS制限エラー："),
+                    React.createElement(
+                      "ul",
+                      { className: "list-disc ml-5" },
+                      React.createElement("li", null, "「詳細設定」から「直接APIアクセス」を有効にし、ブラウザのCORS制限を無効化するプラグインを使用してください"),
+                      React.createElement("li", null, "または、有効なプロキシURLを設定してください"),
+                      React.createElement("li", null, "推奨: 自分でCORSプロキシを設定するか、バックエンドサービスを用意してください")
+                    )
+                  ),
+                  
+                  React.createElement(
+                    "div",
+                    null,
+                    React.createElement("p", { className: "font-medium" }, "一般的な解決策："),
+                    React.createElement(
+                      "ul",
+                      { className: "list-disc ml-5" },
+                      React.createElement("li", null, "APIキーが正しいことを確認してください"),
+                      React.createElement("li", null, "少数の商品（1-2件）から始めてテストしてください")
+                    )
+                  )
+                )
+              )
+            )
+          )
+        ),
+        
+        success && React.createElement(
+          "div",
+          { className: "mb-6 p-4 bg-green-50 border-l-4 border-green-500 rounded" },
+          React.createElement(
+            "div",
+            { className: "flex" },
+            React.createElement(Icon, { name: "check-circle", className: "text-green-500 mr-2 flex-shrink-0" }),
+            React.createElement("p", { className: "text-green-700" }, success)
+          )
+        ),
+        
+        results.length > 0 && React.createElement(
+          "div",
+          { className: "mb-6" },
+          React.createElement("h3", { className: "text-lg font-medium text-gray-700 mb-3" }, "登録結果"),
+          React.createElement(
+            "div",
+            { className: "bg-white border border-gray-200 rounded-md overflow-hidden" },
+            React.createElement(
+              "table",
+              { className: "min-w-full divide-y divide-gray-200" },
+              React.createElement(
+                "thead",
+                { className: "bg-gray-50" },
+                React.createElement(
+                  "tr",
+                  null,
+                  React.createElement(
+                    "th",
+                    { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
+                    "ASIN"
+                  ),
+                  React.createElement(
+                    "th",
+                    { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
+                    "結果"
+                  ),
+                  React.createElement(
+                    "th",
+                    { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
+                    "メッセージ"
+                  )
+                )
+              ),
+              React.createElement(
+                "tbody",
+                { className: "bg-white divide-y divide-gray-200" },
+                results.map(function(result, index) {
+                  return React.createElement(
+                    "tr",
+                    { key: index, className: result.success ? 'bg-green-50' : 'bg-red-50' },
+                    React.createElement("td", { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, result.asin),
+                    React.createElement(
+                      "td",
+                      { className: "px-6 py-4 whitespace-nowrap text-sm" },
+                      result.success ? React.createElement(
+                        "span",
+                        { className: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800" },
+                        React.createElement(Icon, { name: "check", className: "mr-1" }),
+                        "成功"
+                      ) : React.createElement(
+                        "span",
+                        { className: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" },
+                        React.createElement(Icon, { name: "x", className: "mr-1" }),
+                        "失敗"
+                      )
+                    ),
+                    React.createElement("td", { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-500" }, result.message)
+                  );
+                })
+              )
+            )
+          )
+        ),
+        
         React.createElement(
           "div",
-          { className: "mt-2 text-sm space-y-2" },
-          // API制限エラー対処法
-          error.includes('API制限') && React.createElement(
-            "div",
-            null,
-            React.createElement("p", { className: "font-medium" }, "API制限エラー："),
-            React.createElement(
-              "ul",
-              { className: "list-disc ml-5" },
-              React.createElement("li", null, "バッチサイズを小さくしてください（1-3程度）"),
-              React.createElement("li", null, "少し時間をおいてから再試行してください"),
-              React.createElement("li", null, "Keepaアカウントのトークン使用状況を確認してください")
-            )
-          ),
-          
-          // トークン不足エラー対処法
-          error.includes('トークン') && React.createElement(
-            "div",
-            null,
-            React.createElement("p", { className: "font-medium" }, "トークン不足："),
-            React.createElement(
-              "ul",
-              { className: "list-disc ml-5" },
-              React.createElement("li", null, "Keepaアカウントのトークン残高を確認してください"),
-              React.createElement("li", null, "トラッキングによるトークン消費量を確認してください"),
-              React.createElement("li", null, "より高いAPIプランへのアップグレードを検討してください")
-            )
-          ),
-          
-          // CORS制限エラー対処法
-          error.includes('CORS') && React.createElement(
-            "div",
-            null,
-            React.createElement("p", { className: "font-medium" }, "CORS制限エラー："),
-            React.createElement(
-              "ul",
-              { className: "list-disc ml-5" },
-              React.createElement("li", null, "「詳細設定」から「直接APIアクセス」を有効にし、ブラウザのCORS制限を無効化するプラグインを使用してください"),
-              React.createElement("li", null, "または、有効なプロキシURLを設定してください"),
-              React.createElement("li", null, "推奨: 自分でCORSプロキシを設定するか、バックエンドサービスを用意してください")
-            )
-          ),
-          
-          // 一般的な対処法
+          { className: "mt-8 pt-6 border-t border-gray-200" },
+          React.createElement("h3", { className: "text-lg font-medium text-gray-700 mb-3" }, "注意事項"),
           React.createElement(
-            "div",
-            null,
-            React.createElement("p", { className: "font-medium" }, "一般的な解決策："),
+            "ul",
+            { className: "list-disc ml-5 text-sm text-gray-600 space-y-1" },
             React.createElement(
-              "ul",
-              { className: "list-disc ml-5" },
-              React.createElement("li", null, "APIキーが正しいことを確認してください"),
-              React.createElement("li", null, "少数の商品（1-2件）から始めてテストしてください")
-            )
-          )
-        )
-      )
-    )
-  )
-),
-
-// 成功メッセージ
-success && React.createElement(
-  "div",
-  { className: "mb-6 p-4 bg-green-50 border-l-4 border-green-500 rounded" },
-  React.createElement(
-    "div",
-    { className: "flex" },
-    React.createElement(Icon, { name: "check-circle", className: "text-green-500 mr-2 flex-shrink-0" }),
-    React.createElement("p", { className: "text-green-700" }, success)
-  )
-),
-
-// 結果テーブル
-results.length > 0 && React.createElement(
-  "div",
-  { className: "mb-6" },
-  React.createElement("h3", { className: "text-lg font-medium text-gray-700 mb-3" }, "登録結果"),
-  React.createElement(
-    "div",
-    { className: "bg-white border border-gray-200 rounded-md overflow-hidden" },
-    React.createElement(
-      "table",
-      { className: "min-w-full divide-y divide-gray-200" },
-      React.createElement(
-        "thead",
-        { className: "bg-gray-50" },
-        React.createElement(
-          "tr",
-          null,
-          React.createElement(
-            "th",
-            { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
-            "ASIN"
-          ),
-          React.createElement(
-            "th",
-            { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
-            "結果"
-          ),
-          React.createElement(
-            "th",
-            { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" },
-            "メッセージ"
-          )
-        )
-      ),
-      React.createElement(
-        "tbody",
-        { className: "bg-white divide-y divide-gray-200" },
-        results.map(function(result, index) {
-          return React.createElement(
-            "tr",
-            { key: index, className: result.success ? 'bg-green-50' : 'bg-red-50' },
-            React.createElement("td", { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, result.asin),
-            React.createElement(
-              "td",
-              { className: "px-6 py-4 whitespace-nowrap text-sm" },
-              result.success ? React.createElement(
-                "span",
-                { className: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800" },
-                React.createElement(Icon, { name: "check", className: "mr-1" }),
-                "成功"
-              ) : React.createElement(
-                "span",
-                { className: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" },
-                React.createElement(Icon, { name: "x", className: "mr-1" }),
-                "失敗"
-              )
+              "li",
+              null,
+              "Keepa APIキーは ",
+              React.createElement(
+                "a",
+                { 
+                  href: "https://keepa.com/#!api", 
+                  target: "_blank", 
+                  rel: "noopener noreferrer", 
+                  className: "text-blue-600 hover:underline" 
+                },
+                "https://keepa.com/#!api"
+              ),
+              " から取得できます"
             ),
-            React.createElement("td", { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-500" }, result.message)
-          );
-        })
-      )
-    )
-  )
-),
+            React.createElement(
+              "li",
+              null,
+              "トラッキング対象期間はデフォルトで6ヶ月に設定されています（詳細設定で変更可能）"
+            ),
+            React.createElement(
+              "li",
+              null,
+              "API制限に問題がある場合は、バッチサイズを小さくして（1-5程度）再試行してください"
+            ),
+            React.createElement(
+              "li",
+              null,
+              "CORS制限によりブラウザから直接KeepaのAPIにアクセスできない場合があります：",
+              React.createElement(
+                "ul",
+                { className: "list-disc ml-5 mt-1" },
+                React.createElement("li", null, "CORSを無効化するブラウザ拡張機能を使用する"),
+                React.createElement("li", null, "プロキシサーバーを設定する"),
+                React.createElement("li", null, "ローカルでホスティングする場合はブラウザのセキュリティオプションを変更する")
+              )
+            )
+          )
+        ),
+        
+        React.createElement(
+          "footer",
+          { className: "mt-12 pt-6 border-t border-gray-200 text-center text-gray-500 text-sm" },
+          React.createElement("p", null, "L-Track - Keepaトラッキング自動登録ツール"),
+          React.createElement("p", { className: "mt-1" }, "バージョン 1.1.0")
+        )
+      );
+    }
 
-// 注意事項
-React.createElement(
-  "div",
-  { className: "mt-8 pt-6 border-t border-gray-200" },
-  React.createElement("h3", { className: "text-lg font-medium text-gray-700 mb-3" }, "注意事項"),
-  React.createElement(
-    "ul",
-    { className: "list-disc ml-5 text-sm text-gray-600 space-y-1" },
-    React.createElement(
-      "li",
-      null,
-      "Keepa APIキーは ",
-      React.createElement(
-        "a",
-        { 
-          href: "https://keepa.com/#!api", 
-          target: "_blank", 
-          rel: "noopener noreferrer", 
-          className: "text-blue-600 hover:underline" 
-        },
-        "https://keepa.com/#!api"
-      ),
-      " から取得できます"
-    ),
-    React.createElement(
-      "li",
-      null,
-      "トラッキング対象期間はデフォルトで6ヶ月に設定されています（詳細設定で変更可能）"
-    ),
-    React.createElement(
-      "li",
-      null,
-      "API制限に問題がある場合は、バッチサイズを小さくして（1-5程度）再試行してください"
-    ),
-    React.createElement(
-      "li",
-      null,
-      "CORS制限によりブラウザから直接KeepaのAPIにアクセスできない場合があります：",
-      React.createElement(
-        "ul",
-        { className: "list-disc ml-5 mt-1" },
-        React.createElement("li", null, "CORSを無効化するブラウザ拡張機能を使用する"),
-        React.createElement("li", null, "プロキシサーバーを設定する"),
-        React.createElement("li", null, "ローカルでホスティングする場合はブラウザのセキュリティオプションを変更する")
-      )
-    )
-  )
-),
-
-// フッター
-React.createElement(
-  "footer",
-  { className: "mt-12 pt-6 border-t border-gray-200 text-center text-gray-500 text-sm" },
-  React.createElement("p", null, "L-Track - Keepaトラッキング自動登録ツール"),
-  React.createElement("p", { className: "mt-1" }, "バージョン 1.1.0")
-)
-
-); // KeepaTrackerコンポーネントのreturn終了
-  } // KeepaTrackerコンポーネント終了
-
-  // Render the component
-  ReactDOM.render(React.createElement(KeepaTracker, null), document.getElementById('root'));
+    // Render the component
+    ReactDOM.render(React.createElement(KeepaTracker, null), document.getElementById('root'));
   </script>
   
   <!-- アイコンの初期化 -->
@@ -1242,4 +1207,3 @@ React.createElement(
   </script>
 </body>
 </html>
-
